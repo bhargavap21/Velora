@@ -67,15 +67,6 @@ python -m execution_env.rl.train_ppo
 python -m execution_env.env
 ```
 
-## Legacy project: StratRL
-
-The rest of the repo (`backtester.py`, `episode_core.py`, `gym_env.py`, `mutations.py`,
-`server/`, `frontend/`, etc.) is **StratRL**, the prior project this hackathon entry
-pivoted from: an LLM agent that iteratively mutates a rule-based trading strategy
-(indicators, entry/exit conditions, stop-loss/take-profit) and is scored on backtested
-Sharpe-ratio improvement. It's left in place, untouched, as a working fallback — it is
-not part of this hackathon submission.
-
 ## Track positioning
 
 Submitting under **Autonomous Business** — "turn real-world demand into verified

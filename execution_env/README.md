@@ -4,9 +4,7 @@ RL environment for optimal trade execution: an agent must fill a large order (e.
 10,000 shares) over a fixed time window without moving the price against itself. Scored
 on slippage vs. VWAP, the same benchmark real execution desks are graded on.
 
-This directory is the active hackathon project. The rest of the repo (`backtester.py`,
-`episode_core.py`, `gym_env.py`, etc. at the project root) is the prior StratRL project —
-left in place as a working fallback, not part of this submission.
+This directory is the active hackathon project.
 
 ## Layout
 
