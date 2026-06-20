@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import numpy as np
 
+_MAX_SLIPPAGE_BPS = 300.0  # clip extreme slippage (e.g. from outsized-order impact) before scoring
+_UNFILLED_PENALTY_COEF = 1000.0  # bps-equivalent; >> _MAX_SLIPPAGE_BPS so zero-fill always loses to any full fill
+_REWARD_SCALE = 100.0  # bring the bps-scale reward down to an O(1)-ish range for PPO
+
 
 def compute_vwap(prices: np.ndarray, volumes: np.ndarray) -> float:
     """Volume-weighted average price over an array of (price, volume) per slice."""
@@ -36,17 +40,18 @@ def slippage_reward(
     benchmark_vwap: float,
     side: str,
     filled_fraction: float,
-    unfilled_penalty_coef: float = 1.0,
+    unfilled_penalty_coef: float = _UNFILLED_PENALTY_COEF,
 ) -> float:
-    """Reward = -slippage vs. benchmark (in basis points), penalized for unfilled
-    inventory at episode end.
+    """Reward = -slippage vs. benchmark (in basis points, clipped), penalized for
+    unfilled inventory at episode end, scaled down to an O(1)-ish range for PPO.
 
     side: "buy" or "sell". For a buy, a lower agent_vwap than benchmark is good (positive
     reward); for a sell, a higher agent_vwap is good.
 
-    TODO(benchmark): tune unfilled_penalty_coef -- should dominate the reward if the
-    agent fails to complete the order, since an incomplete order is a worse outcome than
-    any amount of slippage.
+    Slippage is clipped to [-_MAX_SLIPPAGE_BPS, _MAX_SLIPPAGE_BPS] before scoring, and
+    unfilled_penalty_coef defaults well above that bound, so a fully-unfilled order
+    always scores worse than even the worst-case fully-filled order: failing to complete
+    the trade is a worse outcome than any amount of slippage.
     """
     if benchmark_vwap <= 0:
         return 0.0
@@ -54,9 +59,10 @@ def slippage_reward(
     raw_slippage_bps = (benchmark_vwap - agent_vwap) / benchmark_vwap * 10_000
     if side == "sell":
         raw_slippage_bps *= -1
+    clipped_slippage_bps = np.clip(raw_slippage_bps, -_MAX_SLIPPAGE_BPS, _MAX_SLIPPAGE_BPS)
 
-    unfilled_penalty = unfilled_penalty_coef * (1.0 - filled_fraction) * 100
-    return raw_slippage_bps - unfilled_penalty
+    unfilled_penalty = unfilled_penalty_coef * (1.0 - filled_fraction)
+    return (clipped_slippage_bps - unfilled_penalty) / _REWARD_SCALE
 
 
 if __name__ == "__main__":

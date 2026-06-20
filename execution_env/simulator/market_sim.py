@@ -3,15 +3,12 @@ Synthetic intraday market simulator for the optimal-execution environment.
 
 We don't have real historical order-book or intraday tick data for 2022-2024, so the
 price path is synthetic: a Brownian bridge between the day's real (open, close), scaled
-to the day's real (high, low) range, calibrated from cached daily OHLCV. Market impact
-follows the standard Almgren-Chriss split: a temporary component that only affects the
-current slice's execution price, and a permanent component that persists for the rest
-of the episode. This is the standard simplification used in execution-RL research when
-L2 data isn't available -- not a shortcut unique to this project.
-
-TODO(market_sim): calibrate _TEMP_IMPACT_COEF / _PERM_IMPACT_COEF against realistic
-magnitudes (impact should be small relative to the day's natural range for a "reasonable"
-order size, and grow superlinearly for outsized orders).
+to the day's real (high, low) range via the Parkinson volatility estimator, calibrated
+from cached daily OHLCV. Market impact follows the standard Almgren-Chriss split: a
+temporary component that only affects the current slice's execution price, and a
+permanent component that persists for the rest of the episode. This is the standard
+simplification used in execution-RL research when L2 data isn't available -- not a
+shortcut unique to this project.
 """
 
 from __future__ import annotations
@@ -28,9 +25,12 @@ _START = "2022-01-01"
 _END = "2024-12-31"
 _DATA_DIR = Path(__file__).parent.parent / "data_cache"
 
-# Almgren-Chriss-style impact coefficients -- TODO: calibrate, see module docstring.
-_TEMP_IMPACT_COEF = 0.1
-_PERM_IMPACT_COEF = 0.05
+# Almgren-Chriss-style impact coefficients, calibrated so a "reasonable" order (~1% ADV)
+# costs single-digit bps -- in line with published market-impact magnitudes -- while the
+# convexity multiplier below makes outsized orders (tens of % of ADV) blow up superlinearly.
+_TEMP_IMPACT_COEF = 0.002
+_PERM_IMPACT_COEF = 0.01
+_OUTSIZED_CONVEXITY = 20.0
 
 
 def load_daily_data() -> dict[str, pd.DataFrame]:
@@ -65,29 +65,48 @@ def u_shaped_volume_curve(n_slices: int) -> np.ndarray:
     """Returns normalized per-slice volume weights (sums to 1), U-shaped: heavier at
     open and close, lighter midday -- matches the well-documented real intraday volume
     profile even without real intraday data.
+
+    Curvature tuned so edge slices carry ~2.86x the volume of the midday slice, in line
+    with published intraday volume-profile studies showing the first/last ~30min carrying
+    roughly 2-3x the midday rate.
     """
     x = np.linspace(-1, 1, n_slices)
-    weights = 0.6 + 0.4 * x**2  # TODO: tune curvature against published volume-profile shapes
+    weights = 0.35 + 0.65 * x**2
     return weights / weights.sum()
 
 
 def generate_intraday_path(day_row: pd.Series, n_slices: int, rng: np.random.Generator) -> np.ndarray:
-    """Synthetic intraday price path of length n_slices+1 (slice boundaries), calibrated
-    to the real day's (Open, High, Low, Close).
+    """Synthetic intraday price path of length n_slices+1 (slice boundaries): a Brownian
+    bridge pinned to the real day's (Open, Close) and clipped to the real day's
+    (Low, High).
 
-    TODO(market_sim): current version is a placeholder linear interpolation + noise.
-    Replace with a proper Brownian bridge clipped to [Low, High] so the path's realized
-    volatility matches the day's actual range.
+    The bridge's per-slice volatility is derived from the Parkinson estimator (a standard
+    OHLC-based volatility estimator using only High/Low), so the path's realized
+    volatility is anchored to the day's actual range rather than picked arbitrarily.
     """
     open_, high, low, close = day_row["Open"], day_row["High"], day_row["Low"], day_row["Close"]
-    base = np.linspace(open_, close, n_slices + 1)
-    noise_scale = (high - low) * 0.1
-    noise = rng.normal(0, noise_scale, size=n_slices + 1)
-    noise[0] = 0.0
-    path = np.clip(base + noise, low, high)
+
+    sigma_day = np.sqrt(np.log(high / low) ** 2 / (4 * np.log(2))) if low > 0 else 0.0
+    sigma_slice = sigma_day / np.sqrt(n_slices)
+
+    increments = rng.normal(0, sigma_slice * open_, size=n_slices)
+    walk = np.concatenate([[0.0], np.cumsum(increments)])
+    t = np.arange(n_slices + 1) / n_slices
+    bridge = walk - t * walk[-1]  # pinned to 0 at both endpoints
+
+    linear_drift = np.linspace(open_, close, n_slices + 1)
+    path = np.clip(linear_drift + bridge, low, high)
     path[0] = open_
     path[-1] = close
     return path
+
+
+def _convexity_multiplier(participation: float) -> float:
+    """Multiplier applied on top of the base impact law. Negligible for normal-sized
+    orders (~1-10% ADV) but grows superlinearly for outsized orders, reflecting that
+    very large orders can't be executed without disproportionate price concessions.
+    """
+    return 1.0 + _OUTSIZED_CONVEXITY * participation**2
 
 
 @dataclass
@@ -96,14 +115,16 @@ class ImpactModel:
 
     def temporary_impact(self, qty: float) -> float:
         """Price impact (fraction of price) that affects only this slice's fill, then
-        decays away. TODO: validate against literature magnitudes."""
+        decays away. Follows the standard square-root law for normal order sizes, with
+        a convexity multiplier that makes outsized orders blow up superlinearly.
+        """
         participation = qty / max(self.adv, 1.0)
-        return _TEMP_IMPACT_COEF * np.sqrt(participation)
+        return _TEMP_IMPACT_COEF * np.sqrt(participation) * _convexity_multiplier(participation)
 
     def permanent_impact(self, qty: float) -> float:
         """Price impact (fraction of price) that persists for the rest of the episode."""
         participation = qty / max(self.adv, 1.0)
-        return _PERM_IMPACT_COEF * participation
+        return _PERM_IMPACT_COEF * participation * _convexity_multiplier(participation)
 
 
 if __name__ == "__main__":

@@ -116,7 +116,7 @@
     384.61536249867606,
     384.61536249867606
   ],
-  "final_reward": 24.6298,
+  "final_reward": 0.2463,
   "filled_fraction": 1.0,
   "schedule_label": "corrected TWAP (equal absolute quantity per slice)"
 }
