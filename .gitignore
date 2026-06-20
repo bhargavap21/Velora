@@ -1,0 +1,12 @@
+.env
+.venv/
+.venv-modal/
+data/
+results/
+__pycache__/
+*.pyc
+.DS_Store
+node_modules/
+frontend/src/assets/
+.claude/
+.mcp.json

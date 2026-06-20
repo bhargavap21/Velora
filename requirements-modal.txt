@@ -1,0 +1,20 @@
+# Separate venv for `modal run modal_runner.py`.
+#
+# hud-python (used by environment.py) pulls in a2a-sdk, which requires
+# protobuf>=5.29.5. The `modal` package requires protobuf<5.0. These cannot
+# coexist in one venv, and environment.py is not needed to run the Modal job
+# (modal_runner.py and episode_core.py have no hud dependency) — so this runs
+# in its own venv:
+#
+#   python3 -m venv .venv-modal
+#   source .venv-modal/bin/activate
+#   pip install -r requirements-modal.txt
+#   modal run modal_runner.py
+modal==1.5.0
+anthropic==0.111.0
+pandas==3.0.3
+numpy==2.4.6
+yfinance==1.4.1
+pyarrow==24.0.0
+exa-py==2.14.0
+python-dotenv==1.2.2
