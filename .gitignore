@@ -1,4 +1,5 @@
 .env
+.hud_eval.toml
 .venv/
 .venv-modal/
 /data/

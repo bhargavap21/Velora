@@ -52,10 +52,31 @@ execution_env/
 
 ### Remaining / nice-to-have
 
-- [ ] **Full HUD agent eval** — `hud eval execution_env/tasks.py claude ...` against a live
-  model loop (needs HUD cloud creds). Only local serve + scoring is verified so far.
 - [ ] **PPO is fixed to 26 slices** — retrain per-timeframe if the sandbox should support
   PPO at other slice counts.
+- [ ] **Stronger PPO** — current checkpoint trades at ~parity with the VWAP baseline;
+  longer training / reward shaping should open a clearer edge.
+
+## Benchmark results
+
+**HUD agent eval** (`hud eval execution_env/tasks.py claude --all`, 2026-06-20,
+`claude-sonnet-4-6` via HUD gateway). Reward is normalized so 0.50 = the VWAP benchmark.
+
+| Task          | Reward | vs VWAP |
+|---------------|--------|---------|
+| buy-10k-aapl  | 0.537  | beat    |
+| buy-10k-tsla  | 0.728  | beat    |
+| sell-10k-spy  | 0.456  | under   |
+| **Mean**      | **0.573 ± 0.114** | 2/3 tasks beat VWAP |
+
+Job: https://hud.ai/jobs/79f7ed9e46b047b1ad709d5c03aee3e7
+
+**PPO held-out eval** (batch evaluation over 60 chronologically held-out AAPL days the
+model never trained on, paired against the VWAP-match baseline on the identical price
+path): win-rate **55%**, median advantage **+0.48 bps**, mean order notional ≈ $2.6M. PPO
+trades at roughly parity with the baseline today — an honest result for a short training run.
+
+The landing page reads these numbers from `frontend/src/data/benchmarks.js`.
 
 ## Endpoints (`server.py`, port 8010)
 
