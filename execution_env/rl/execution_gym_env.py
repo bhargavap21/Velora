@@ -2,13 +2,11 @@
 Gymnasium wrapper around the optimal-execution simulator.
 
 One episode = one (ticker, historical day) pair. The agent must execute a fixed total
-quantity over a fixed number of slices; action is the fraction of *remaining* inventory
-to execute this slice (continuous, bounded [0, 1]) so the action space stays well-posed
-regardless of how much inventory is left.
-
-TODO(execution_gym_env): this skeleton wires the interfaces together but has not been
-run through gymnasium's check_env yet -- do that before training. See
-simulator/market_sim.py and simulator/benchmark.py for the pieces this composes.
+quantity over a fixed number of slices; action is a participation multiplier (continuous,
+bounded [0, 2]) on the volume-curve-implied "fair share" of *remaining* inventory for this
+slice, so the action space stays well-posed regardless of how much inventory is left, and
+`action == 1.0` exactly reproduces the VWAP benchmark schedule the agent is scored against.
+See simulator/market_sim.py and simulator/benchmark.py for the pieces this composes.
 """
 
 from __future__ import annotations
@@ -19,8 +17,8 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from execution_env.simulator.benchmark import compute_vwap, execution_vwap, slippage_reward
-from execution_env.simulator.market_sim import ImpactModel, generate_intraday_path, load_daily_data, u_shaped_volume_curve
+from execution_env.simulator.benchmark import _MAX_SLIPPAGE_BPS, compute_vwap, execution_vwap, slippage_reward
+from execution_env.simulator.market_sim import ImpactModel, intraday_path_and_volume, load_daily_data, load_minute_data
 
 _TICKERS = ["TSLA", "NVDA", "AAPL", "SPY"]
 _N_SLICES = 26  # e.g. 15-min slices across a 6.5h trading day
@@ -30,17 +28,36 @@ _TOTAL_SHARES = 10_000
 class ExecutionEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, n_slices: int = _N_SLICES, total_shares: int = _TOTAL_SHARES, side: str = "buy"):
+    def __init__(
+        self,
+        n_slices: int = _N_SLICES,
+        total_shares: int = _TOTAL_SHARES,
+        side: str = "buy",
+        day_range: tuple[float, float] = (0.0, 1.0),
+        tickers: list[str] | None = None,
+    ):
+        """day_range restricts which (ticker, day) pairs reset() can sample, as a
+        fraction of each ticker's chronological history -- e.g. (0.0, 0.8) for a
+        training split, (0.8, 1.0) for a held-out evaluation split. Chronological, not
+        random, so the holdout set is genuinely unseen future data, not just a random
+        subsample of the same period.
+
+        tickers restricts which tickers reset() can sample from (defaults to all of
+        _TICKERS) -- e.g. so a caller can pin an episode to a single requested ticker.
+        """
         super().__init__()
         self._n_slices = n_slices
         self._total_shares = total_shares
         self._side = side
+        self._day_range = day_range
+        self._tickers = tickers or _TICKERS
         self._data = load_daily_data()
+        self._minute_data = {ticker: load_minute_data(ticker) for ticker in self._tickers}
 
-        self.action_space = spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
+        self.action_space = spaces.Box(low=0.0, high=2.0, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(
-            low=np.array([0.0, 0.0, -1.0, 0.0], dtype=np.float32),
-            high=np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32),
+            low=np.array([0.0, 0.0, -1.0, 0.0, -1.0], dtype=np.float32),
+            high=np.array([1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32),
             dtype=np.float32,
         )
 
@@ -60,21 +77,43 @@ class ExecutionEnv(gym.Env):
         if self._slice_idx > 0:
             recent_return = (self._path[self._slice_idx] - self._path[self._slice_idx - 1]) / self._path[self._slice_idx - 1]
         volume_curve_position = self._volume_curve[min(self._slice_idx, self._n_slices - 1)]
+
+        interim_slippage_norm = 0.0
+        if self._slice_idx > 0:
+            interim_agent_vwap = execution_vwap(np.array(self._exec_prices), np.array(self._exec_quantities))
+            interim_benchmark_vwap = compute_vwap(
+                self._path[1 : self._slice_idx + 1], self._volume_curve[: self._slice_idx] * self._total_shares
+            )
+            raw_bps = (interim_benchmark_vwap - interim_agent_vwap) / interim_benchmark_vwap * 10_000
+            if self._side == "sell":
+                raw_bps *= -1
+            interim_slippage_norm = float(np.clip(raw_bps, -_MAX_SLIPPAGE_BPS, _MAX_SLIPPAGE_BPS) / _MAX_SLIPPAGE_BPS)
+
         return np.array(
-            [shares_remaining_frac, time_remaining_frac, np.clip(recent_return, -1, 1), volume_curve_position],
+            [
+                shares_remaining_frac,
+                time_remaining_frac,
+                np.clip(recent_return, -1, 1),
+                volume_curve_position,
+                interim_slippage_norm,
+            ],
             dtype=np.float32,
         )
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         ticker = self._tickers_choice()
+        self._ticker = ticker
         df = self._data[ticker]
-        day_idx = int(self.np_random.integers(len(df)))
+        lo = int(len(df) * self._day_range[0])
+        hi = max(lo + 1, int(len(df) * self._day_range[1]))
+        day_idx = lo + int(self.np_random.integers(hi - lo))
         day_row = df.iloc[day_idx]
 
         rng = np.random.default_rng(seed)
-        self._path = generate_intraday_path(day_row, self._n_slices, rng)
-        self._volume_curve = u_shaped_volume_curve(self._n_slices)
+        self._path, self._volume_curve = intraday_path_and_volume(
+            ticker, df.index[day_idx], day_row, self._n_slices, rng, self._minute_data
+        )
         adv = float(day_row["Volume"])
         self._impact = ImpactModel(adv=adv)
 
@@ -84,14 +123,23 @@ class ExecutionEnv(gym.Env):
         self._exec_quantities = []
         self._permanent_offset = 0.0
 
-        return self._build_obs(), {}
+        info = {
+            "ticker": ticker,
+            "open_price": float(self._path[0]),
+            "volume_curve": self._volume_curve.tolist(),
+            "n_slices": self._n_slices,
+            "total_shares": self._total_shares,
+        }
+        return self._build_obs(), info
 
     def _tickers_choice(self) -> str:
-        return _TICKERS[int(self.np_random.integers(len(_TICKERS)))]
+        return self._tickers[int(self.np_random.integers(len(self._tickers)))]
 
     def step(self, action: np.ndarray):
-        frac = float(np.clip(action[0], 0.0, 1.0))
-        qty = frac * self._shares_remaining
+        remaining_weights = self._volume_curve[self._slice_idx :]
+        fair_share_qty = (self._volume_curve[self._slice_idx] / remaining_weights.sum()) * self._shares_remaining
+        participation = float(np.clip(action[0], 0.0, 2.0))
+        qty = float(np.clip(participation * fair_share_qty, 0.0, self._shares_remaining))
 
         base_price = self._path[self._slice_idx] * (1 + self._permanent_offset)
         temp_impact = self._impact.temporary_impact(qty)

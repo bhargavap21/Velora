@@ -31,14 +31,16 @@ def _build_prompt(total_shares: int, n_slices: int, ticker: str) -> str:
 over {n_slices} time slices today without moving the price against yourself more than
 necessary.
 
-Propose a full execution schedule as JSON: a list of {n_slices} fractions (each in
-[0, 1], representing the fraction of *remaining* inventory to execute in that slice),
-such that the order is fully filled by the end.
+Propose a full execution schedule as JSON: a list of {n_slices} participation
+multipliers (each in [0, 2]), where each multiplier scales the volume-curve-implied
+"fair share" of remaining inventory to trade in that slice -- a multiplier of 1.0 means
+"trade at exactly the VWAP-implied rate," below 1.0 trades less than that, above 1.0
+trades more. The order must be fully filled by the end.
 
 You will be scored on slippage vs. VWAP (lower is better) plus a penalty for any
 unfilled inventory.
 
-Return ONLY a JSON object: {{"schedule": [f0, f1, ..., f{n_slices - 1}], "reasoning": "..."}}"""
+Return ONLY a JSON object: {{"schedule": [m0, m1, ..., m{n_slices - 1}], "reasoning": "..."}}"""
 
 
 def run_scenario(schedule: list[float], total_shares: int = _TOTAL_SHARES, n_slices: int = _N_SLICES) -> dict:
@@ -52,8 +54,8 @@ def run_scenario(schedule: list[float], total_shares: int = _TOTAL_SHARES, n_sli
 
     total_reward = 0.0
     for i in range(n_slices):
-        frac = schedule[i] if i < len(schedule) else 1.0  # force-fill on schedule underrun
-        obs, reward, terminated, truncated, _ = env.step(np.array([frac], dtype=np.float32))
+        multiplier = schedule[i] if i < len(schedule) else 2.0  # force max participation on schedule underrun
+        obs, reward, terminated, truncated, _ = env.step(np.array([multiplier], dtype=np.float32))
         total_reward += reward
         if terminated:
             break
@@ -62,6 +64,6 @@ def run_scenario(schedule: list[float], total_shares: int = _TOTAL_SHARES, n_sli
 
 
 if __name__ == "__main__":
-    naive_schedule = [1.0 / _N_SLICES] * _N_SLICES  # TWAP baseline: equal slices
-    result = run_scenario(naive_schedule)
-    print("Naive TWAP schedule result:", result)
+    vwap_schedule = [1.0] * _N_SLICES  # VWAP-matching baseline: participation = 1.0 every slice
+    result = run_scenario(vwap_schedule)
+    print("VWAP-matching schedule result:", result)

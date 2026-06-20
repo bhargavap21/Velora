@@ -4,9 +4,7 @@ import {
 
 /**
  * Builds chart-ready rows for slices [0, upToSlice] (inclusive) from a raw episode
- * trace (see execution_env/export_sample_episode.py for the exact shape this expects --
- * the real backend SSE stream should emit equivalent per-slice fields once issue #8
- * wires it up).
+ * trace (see execution_env/server.py's GET /api/episode for the exact shape this expects).
  */
 export function buildChartData(episode, upToSlice) {
   const { path, volume_curve, exec_prices, exec_quantities, total_shares } = episode

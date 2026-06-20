@@ -5,17 +5,51 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
-import episode from '../data/sample_episode.json'
 
 const TICK_MS = 350
 
 export default function ExecutionLive() {
+  const [policy, setPolicy] = useState('twap')
+  const [availablePolicies, setAvailablePolicies] = useState(['twap'])
+  const [episode, setEpisode] = useState(null)
+  const [error, setError] = useState(null)
+  const [loading, setLoading] = useState(false)
   const [slice, setSlice] = useState(0)
   const [playing, setPlaying] = useState(true)
   const intervalRef = useRef(null)
 
   useEffect(() => {
-    if (!playing) return
+    fetch('/api/policies')
+      .then(res => res.json())
+      .then(data => setAvailablePolicies(data.available))
+      .catch(() => {})
+  }, [])
+
+  const runEpisode = (selectedPolicy) => {
+    setLoading(true)
+    setError(null)
+    setPlaying(false)
+    fetch(`/api/episode?policy=${selectedPolicy}`)
+      .then(async res => {
+        if (!res.ok) throw new Error((await res.json()).detail || 'Failed to run episode')
+        return res.json()
+      })
+      .then(data => {
+        setEpisode(data)
+        setSlice(0)
+        setPlaying(true)
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => {
+    runEpisode(policy)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (!playing || !episode) return
     intervalRef.current = setInterval(() => {
       setSlice(s => {
         if (s >= episode.n_slices) {
@@ -26,11 +60,11 @@ export default function ExecutionLive() {
       })
     }, TICK_MS)
     return () => clearInterval(intervalRef.current)
-  }, [playing])
+  }, [playing, episode])
 
-  const filledFraction = slice / episode.n_slices
-  const slippageBps = currentSlippageBps(episode, slice)
-  const done = slice >= episode.n_slices
+  const filledFraction = episode ? slice / episode.n_slices : 0
+  const slippageBps = episode ? currentSlippageBps(episode, slice) : null
+  const done = episode ? slice >= episode.n_slices : false
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -40,13 +74,25 @@ export default function ExecutionLive() {
           <div>
             <h2 className="text-xl font-bold">Live Execution</h2>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              {episode.schedule_label} — replaying a real simulator episode
+              {episode ? `${episode.schedule_label} — run live by the backend simulator` : 'Running simulator episode…'}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant="secondary">{episode.ticker}</Badge>
-            <Badge variant="secondary">{episode.side} {episode.total_shares.toLocaleString()} sh</Badge>
-            {done ? (
+            <select
+              className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+              value={policy}
+              disabled={loading}
+              onChange={e => { setPolicy(e.target.value); runEpisode(e.target.value) }}
+            >
+              {availablePolicies.map(p => (
+                <option key={p} value={p}>{p.toUpperCase()}</option>
+              ))}
+            </select>
+            {episode && <Badge variant="secondary">{episode.ticker}</Badge>}
+            {episode && <Badge variant="secondary">{episode.side} {episode.total_shares.toLocaleString()} sh</Badge>}
+            {loading ? (
+              <span className="animate-pulse text-xs text-muted-foreground">Simulating…</span>
+            ) : done ? (
               <span className="text-xs font-medium text-green-500">✓ Complete</span>
             ) : (
               <span className="animate-pulse text-xs text-muted-foreground">Running…</span>
@@ -54,12 +100,20 @@ export default function ExecutionLive() {
           </div>
         </div>
 
+        {error && (
+          <Card className="mb-4 border-red-500/50">
+            <CardContent className="pt-6 text-sm text-red-500">{error}</CardContent>
+          </Card>
+        )}
+
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Price path &amp; execution</CardTitle>
           </CardHeader>
           <CardContent>
-            <ExecutionChart episode={episode} currentSlice={slice} />
+            {episode ? <ExecutionChart episode={episode} currentSlice={slice} /> : (
+              <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">Loading…</div>
+            )}
           </CardContent>
         </Card>
 
@@ -84,16 +138,16 @@ export default function ExecutionLive() {
           <Card>
             <CardContent className="pt-6">
               <p className="text-xs text-muted-foreground">Slice</p>
-              <p className="mt-1 text-2xl font-bold">{slice} / {episode.n_slices}</p>
+              <p className="mt-1 text-2xl font-bold">{slice} / {episode ? episode.n_slices : '—'}</p>
             </CardContent>
           </Card>
         </div>
 
         <div className="mt-4 flex gap-2">
           {done ? (
-            <Button onClick={() => { setSlice(0); setPlaying(true) }}>Replay</Button>
+            <Button onClick={() => runEpisode(policy)} disabled={loading}>New episode</Button>
           ) : (
-            <Button variant="outline" onClick={() => setPlaying(p => !p)}>
+            <Button variant="outline" onClick={() => setPlaying(p => !p)} disabled={!episode}>
               {playing ? 'Pause' : 'Resume'}
             </Button>
           )}

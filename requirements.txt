@@ -27,6 +27,7 @@ docstring_parser==0.18.0
 email-validator==2.3.0
 exceptiongroup==1.3.1
 fastmcp==3.0.2
+fastapi==0.137.2
 fonttools==4.63.0
 google-api-core==2.31.0
 google-auth==2.55.0
