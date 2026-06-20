@@ -8,6 +8,13 @@ import { Progress } from '@/components/ui/progress'
 
 const TICK_MS = 350
 
+const POLICY_LABELS = {
+  twap: 'TWAP',
+  ppo: 'PPO',
+  llm: 'Claude LLM',
+  fireworks: 'Llama (Fireworks)',
+}
+
 export default function ExecutionLive() {
   const [policy, setPolicy] = useState('twap')
   const [availablePolicies, setAvailablePolicies] = useState(['twap'])
@@ -20,8 +27,13 @@ export default function ExecutionLive() {
 
   useEffect(() => {
     fetch('/api/policies')
-      .then(res => res.json())
-      .then(data => setAvailablePolicies(data.available))
+      .then(res => {
+        if (!res.ok) throw new Error('Failed to load policies')
+        return res.json()
+      })
+      .then(data => {
+        if (Array.isArray(data.available)) setAvailablePolicies(data.available)
+      })
       .catch(() => {})
   }, [])
 
@@ -85,7 +97,7 @@ export default function ExecutionLive() {
               onChange={e => { setPolicy(e.target.value); runEpisode(e.target.value) }}
             >
               {availablePolicies.map(p => (
-                <option key={p} value={p}>{p.toUpperCase()}</option>
+                <option key={p} value={p}>{POLICY_LABELS[p] ?? p.toUpperCase()}</option>
               ))}
             </select>
             {episode && <Badge variant="secondary">{episode.ticker}</Badge>}
@@ -152,6 +164,23 @@ export default function ExecutionLive() {
             </Button>
           )}
         </div>
+
+        {episode?.llm_reasoning && (
+          <Card className="mt-4">
+            <CardContent className="pt-4">
+              <p className="mb-1 text-xs font-medium text-muted-foreground uppercase tracking-wide">Claude reasoning</p>
+              <p className="text-sm leading-relaxed">{episode.llm_reasoning}</p>
+              {episode.llm_primitive && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Schedule primitive: <span className="font-medium text-foreground">{episode.llm_primitive}</span>
+                  {episode.llm_pause_enabled && (
+                    <span className="ml-2">· pause-on-adverse-move enabled ({episode.llm_pause_threshold_bps} bps)</span>
+                  )}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   )
