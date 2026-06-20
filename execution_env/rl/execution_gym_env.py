@@ -67,7 +67,8 @@ class ExecutionEnv(gym.Env):
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
-        ticker = self._tickers_choice()
+        self._ticker = self._tickers_choice()
+        ticker = self._ticker
         df = self._data[ticker]
         day_idx = int(self.np_random.integers(len(df)))
         day_row = df.iloc[day_idx]
@@ -84,7 +85,13 @@ class ExecutionEnv(gym.Env):
         self._exec_quantities = []
         self._permanent_offset = 0.0
 
-        return self._build_obs(), {}
+        return self._build_obs(), {
+            "ticker": ticker,
+            "open_price": float(self._path[0]),
+            "volume_curve": self._volume_curve.tolist(),
+            "n_slices": self._n_slices,
+            "total_shares": self._total_shares,
+        }
 
     def _tickers_choice(self) -> str:
         return _TICKERS[int(self.np_random.integers(len(_TICKERS)))]
