@@ -1,27 +1,31 @@
+"""Task definitions for the Velora optimal-execution HUD environment.
+
+    hud eval execution_env/tasks.py claude --task-ids buy-10k-aapl -y --max-steps 8
+    hud eval execution_env/tasks.py claude --task-ids buy-10k-tsla  -y --max-steps 8
+    hud eval execution_env/tasks.py claude --task-ids sell-10k-spy  -y --max-steps 8
 """
-Task definitions for the optimal-execution HUD environment.
 
-TODO(tasks.py): confirm task schema against a real cloned template (see env.py's
-module docstring) -- this is written from README descriptions of the task tables in
-autonomous-businesses-template / verilog-template, not verified source.
-"""
+from execution_env.env import (  # noqa: F401  (re-export env for `hud eval tasks.py`)
+    buy_10k_aapl,
+    buy_10k_tsla,
+    env,
+    sell_10k_spy,
+)
 
-from __future__ import annotations
+_PROMPT = (
+    "You are an institutional execution trader. Minimize VWAP slippage on the order "
+    "described in the task. Use read_market_context() to inspect the market, then "
+    "submit_schedule() with your full {n_slices}-slice participation plan before the "
+    "session ends. Trade more when volume is high and less when price moves against you."
+)
 
-TASKS = [
-    {
-        "slug": "buy-10k-aapl",
-        "prompt_args": {"ticker": "AAPL", "total_shares": 10_000, "side": "buy"},
-        "description": "Buy 10,000 shares of AAPL over one trading day, minimize slippage vs. VWAP.",
-    },
-    {
-        "slug": "buy-10k-tsla",
-        "prompt_args": {"ticker": "TSLA", "total_shares": 10_000, "side": "buy"},
-        "description": "Buy 10,000 shares of TSLA (higher volatility) over one trading day.",
-    },
-    {
-        "slug": "sell-10k-spy",
-        "prompt_args": {"ticker": "SPY", "total_shares": 10_000, "side": "sell"},
-        "description": "Sell 10,000 shares of SPY over one trading day.",
-    },
-]
+_buy_aapl = buy_10k_aapl(prompt=_PROMPT.format(n_slices=26))
+_buy_aapl.slug = "buy-10k-aapl"
+
+_buy_tsla = buy_10k_tsla(prompt=_PROMPT.format(n_slices=26))
+_buy_tsla.slug = "buy-10k-tsla"
+
+_sell_spy = sell_10k_spy(prompt=_PROMPT.format(n_slices=26))
+_sell_spy.slug = "sell-10k-spy"
+
+tasks = [_buy_aapl, _buy_tsla, _sell_spy]

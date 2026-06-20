@@ -1,13 +1,19 @@
-# TODO(Dockerfile.hud): written from template READMEs, not a verified hud v6 base image.
-# Confirm the correct base image / `hud serve` entrypoint against a real cloned template
-# before relying on this for a hosted run (see env.py's module docstring).
+# HUD v6 deployment image for Velora execution environment.
+# Verified against hud-evals/autonomous-businesses-template (python:3.12-slim, hud serve).
 
 FROM python:3.12-slim
 
 WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY execution_env ./execution_env
 
-CMD ["python", "-m", "execution_env.env"]
+ENV PYTHONPATH=/app
+
+EXPOSE 8765
+CMD ["python", "-m", "hud", "serve", "execution_env/env.py:env", "--host", "0.0.0.0", "--port", "8765"]
