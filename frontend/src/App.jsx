@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import Home from './pages/Home'
 import Live from './pages/Live'
 import Results from './pages/Results'
+import ExecutionLive from './pages/ExecutionLive'
 
 export default function App() {
   return (
@@ -10,6 +11,7 @@ export default function App() {
         <Route path="/" element={<Home />} />
         <Route path="/live/:runId" element={<Live />} />
         <Route path="/results/:runId" element={<Results />} />
+        <Route path="/execution-demo" element={<ExecutionLive />} />
       </Routes>
     </BrowserRouter>
   )
