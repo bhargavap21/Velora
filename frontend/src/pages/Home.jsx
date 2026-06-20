@@ -34,9 +34,6 @@ export default function Home() {
           <Button size="lg" onClick={() => navigate('/execution-demo')}>
             Watch live demo →
           </Button>
-          <Button size="lg" variant="outline" onClick={() => navigate('/legacy')}>
-            Legacy: StratRL
-          </Button>
         </div>
 
         <div className="mx-auto mt-16 grid max-w-lg grid-cols-3 gap-4">
