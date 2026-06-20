@@ -10,3 +10,6 @@ node_modules/
 frontend/src/assets/
 .claude/
 .mcp.json
+.pytest_cache/
+execution_env/data_cache/
+execution_env/results/
