@@ -20,7 +20,7 @@ import numpy as np
 from gymnasium import spaces
 
 from execution_env.simulator.benchmark import compute_vwap, execution_vwap, slippage_reward
-from execution_env.simulator.market_sim import ImpactModel, generate_intraday_path, load_daily_data, u_shaped_volume_curve
+from execution_env.simulator.market_sim import ImpactModel, get_intraday_path, load_intraday_data, u_shaped_volume_curve
 
 _TICKERS = ["TSLA", "NVDA", "AAPL", "SPY"]
 _N_SLICES = 26  # e.g. 15-min slices across a 6.5h trading day
@@ -35,7 +35,14 @@ class ExecutionEnv(gym.Env):
         self._n_slices = n_slices
         self._total_shares = total_shares
         self._side = side
-        self._data = load_daily_data()
+        self._intraday = load_intraday_data()
+        # Pre-compute valid trading days per ticker: need >= 4 hourly bars to be meaningful
+        self._valid_days: dict[str, list] = {
+            ticker: [
+                date for date, group in df.groupby(df.index.date) if len(group) >= 4
+            ]
+            for ticker, df in self._intraday.items()
+        }
 
         self.action_space = spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
         self.observation_space = spaces.Box(
@@ -69,14 +76,13 @@ class ExecutionEnv(gym.Env):
         super().reset(seed=seed)
         self._ticker = self._tickers_choice()
         ticker = self._ticker
-        df = self._data[ticker]
-        day_idx = int(self.np_random.integers(len(df)))
-        day_row = df.iloc[day_idx]
+        valid = self._valid_days[ticker]
+        date = valid[int(self.np_random.integers(len(valid)))]
+        day_bars = self._intraday[ticker][self._intraday[ticker].index.date == date]
 
-        rng = np.random.default_rng(seed)
-        self._path = generate_intraday_path(day_row, self._n_slices, rng)
+        self._path = get_intraday_path(day_bars, self._n_slices)
         self._volume_curve = u_shaped_volume_curve(self._n_slices)
-        adv = float(day_row["Volume"])
+        adv = float(day_bars["Volume"].sum())
         self._impact = ImpactModel(adv=adv)
 
         self._slice_idx = 0

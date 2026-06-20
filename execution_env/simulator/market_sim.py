@@ -1,13 +1,14 @@
 """
-Synthetic intraday market simulator for the optimal-execution environment.
+Intraday market simulator for the optimal-execution environment.
 
-We don't have real historical order-book or intraday tick data for 2022-2024, so the
-price path is synthetic: a Brownian bridge between the day's real (open, close), scaled
-to the day's real (high, low) range, calibrated from cached daily OHLCV. Market impact
-follows the standard Almgren-Chriss split: a temporary component that only affects the
-current slice's execution price, and a permanent component that persists for the rest
-of the episode. This is the standard simplification used in execution-RL research when
-L2 data isn't available -- not a shortcut unique to this project.
+Price paths come from real 1-hour OHLCV bars downloaded from Yahoo Finance (up to 2
+years of history per ticker). Each episode replays an actual historical trading day:
+the real hourly closes are used as anchor points and linearly interpolated to produce
+n_slices+1 slice-boundary prices, so path[0] is the true open and path[-1] is the
+true close of that day.
+
+Market impact follows the standard Almgren-Chriss split: temporary (decays after the
+slice) + permanent (persists for the rest of the episode).
 
 TODO(market_sim): calibrate _TEMP_IMPACT_COEF / _PERM_IMPACT_COEF against realistic
 magnitudes (impact should be small relative to the day's natural range for a "reasonable"
@@ -33,32 +34,51 @@ _TEMP_IMPACT_COEF = 0.1
 _PERM_IMPACT_COEF = 0.05
 
 
-def load_daily_data() -> dict[str, pd.DataFrame]:
-    """Loads cached daily OHLCV per ticker (downloads + caches on first run).
+def load_intraday_data() -> dict[str, pd.DataFrame]:
+    """Download and cache real 1-hour intraday bars per ticker (up to 2 years back).
 
-    Mirrors ../../backtester.py's _load_data, duplicated here so this module has no
-    dependency on the legacy StratRL code.
+    Each DataFrame is indexed by tz-naive datetime (America/New_York) with columns
+    [Open, High, Low, Close, Volume]. Cached to data_cache/{ticker}_1h.parquet.
     """
     _DATA_DIR.mkdir(exist_ok=True)
     result = {}
     missing = []
     for ticker in _TICKERS:
-        path = _DATA_DIR / f"{ticker}.parquet"
-        if path.exists():
-            result[ticker] = pd.read_parquet(path)
+        cache_path = _DATA_DIR / f"{ticker}_1h.parquet"
+        if cache_path.exists():
+            result[ticker] = pd.read_parquet(cache_path)
         else:
             missing.append(ticker)
 
-    if missing:
-        raw = yf.download(missing, start=_START, end=_END, auto_adjust=True, progress=False)
-        for ticker in missing:
-            df = raw.xs(ticker, axis=1, level=1)[["Open", "High", "Low", "Close", "Volume"]].copy()
-            df.index = pd.to_datetime(df.index)
-            df.dropna(inplace=True)
-            df.to_parquet(_DATA_DIR / f"{ticker}.parquet")
-            result[ticker] = df
+    for ticker in missing:
+        raw = yf.download(ticker, period="2y", interval="1h", auto_adjust=True, progress=False)
+        if isinstance(raw.columns, pd.MultiIndex):
+            raw = raw.xs(ticker, axis=1, level=1)
+        df = raw[["Open", "High", "Low", "Close", "Volume"]].copy()
+        df.index = pd.to_datetime(df.index)
+        if df.index.tzinfo is not None:
+            df.index = df.index.tz_convert("America/New_York").tz_localize(None)
+        df.dropna(inplace=True)
+        df.to_parquet(_DATA_DIR / f"{ticker}_1h.parquet")
+        result[ticker] = df
 
     return result
+
+
+def get_intraday_path(day_bars: pd.DataFrame, n_slices: int) -> np.ndarray:
+    """Build a real price path for one trading day from 1-hour bars.
+
+    Uses the day's actual open as path[0] and each hourly close as an anchor,
+    linearly interpolating to produce n_slices+1 evenly-spaced slice-boundary
+    prices. path[0] = real open, path[-1] = real close of the last bar.
+    """
+    prices = np.concatenate([
+        [float(day_bars["Open"].iloc[0])],
+        day_bars["Close"].values.astype(float),
+    ])
+    x_anchors = np.linspace(0, n_slices, len(prices))
+    x_target = np.arange(n_slices + 1, dtype=float)
+    return np.interp(x_target, x_anchors, prices)
 
 
 def u_shaped_volume_curve(n_slices: int) -> np.ndarray:
@@ -71,23 +91,6 @@ def u_shaped_volume_curve(n_slices: int) -> np.ndarray:
     return weights / weights.sum()
 
 
-def generate_intraday_path(day_row: pd.Series, n_slices: int, rng: np.random.Generator) -> np.ndarray:
-    """Synthetic intraday price path of length n_slices+1 (slice boundaries), calibrated
-    to the real day's (Open, High, Low, Close).
-
-    TODO(market_sim): current version is a placeholder linear interpolation + noise.
-    Replace with a proper Brownian bridge clipped to [Low, High] so the path's realized
-    volatility matches the day's actual range.
-    """
-    open_, high, low, close = day_row["Open"], day_row["High"], day_row["Low"], day_row["Close"]
-    base = np.linspace(open_, close, n_slices + 1)
-    noise_scale = (high - low) * 0.1
-    noise = rng.normal(0, noise_scale, size=n_slices + 1)
-    noise[0] = 0.0
-    path = np.clip(base + noise, low, high)
-    path[0] = open_
-    path[-1] = close
-    return path
 
 
 @dataclass
@@ -107,6 +110,8 @@ class ImpactModel:
 
 
 if __name__ == "__main__":
-    data = load_daily_data()
-    print({k: len(v) for k, v in data.items()})
+    data = load_intraday_data()
+    for ticker, df in data.items():
+        n_days = df.groupby(df.index.date).ngroups
+        print(f"{ticker}: {len(df)} 1h bars across {n_days} trading days")
     print("U-shaped volume curve (10 slices):", u_shaped_volume_curve(10).round(3))
