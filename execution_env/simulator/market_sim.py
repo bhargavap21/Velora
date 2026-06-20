@@ -29,10 +29,33 @@ load_dotenv()
 
 _TICKERS = ["TSLA", "NVDA", "AAPL", "SPY"]
 _START = "2022-01-01"
-_END = "2024-12-31"
 _DATA_DIR = Path(__file__).parent.parent / "data_cache"
 _SESSION_START = "09:30"
 _SESSION_END = "16:00"
+
+
+def _data_end() -> str:
+    """Last calendar day to request from data providers (yesterday ET, avoids partial today)."""
+    today = pd.Timestamp.now(tz="America/New_York").normalize()
+    return (today - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+# Back-compat alias for config/docs; live fetches use _data_end().
+_END = _data_end()
+
+
+def _alpaca_credentials() -> tuple[str, str] | None:
+    api_key = os.environ.get("ALPACA_API_KEY")
+    secret_key = os.environ.get("ALPACA_SECRET_KEY")
+    if api_key and secret_key:
+        return api_key, secret_key
+    return None
+
+
+def _daily_cache_stale(df: pd.DataFrame) -> bool:
+    """True when cached daily bars are more than a few days behind _data_end()."""
+    target = pd.Timestamp(_data_end()).normalize()
+    return df.index.max().normalize() < target - pd.Timedelta(days=5)
 
 # Almgren-Chriss-style impact coefficients, calibrated so a "reasonable" order (~1% ADV)
 # costs single-digit bps -- in line with published market-impact magnitudes -- while the
@@ -56,7 +79,13 @@ def load_daily_data() -> dict[str, pd.DataFrame]:
     for ticker in _TICKERS:
         path = _DATA_DIR / f"{ticker}.parquet"
         if path.exists():
-            result[ticker] = pd.read_parquet(path)
+            df = pd.read_parquet(path)
+            if _daily_cache_stale(df):
+                refreshed = _load_daily_from_alpaca([ticker])
+                if ticker in refreshed:
+                    df = refreshed[ticker]
+                    df.to_parquet(path)
+            result[ticker] = df
         else:
             missing.append(ticker)
 
@@ -68,7 +97,7 @@ def load_daily_data() -> dict[str, pd.DataFrame]:
 
         still_missing = [t for t in missing if t not in fetched]
         if still_missing:
-            raw = yf.download(still_missing, start=_START, end=_END, auto_adjust=True, progress=False)
+            raw = yf.download(still_missing, start=_START, end=_data_end(), auto_adjust=True, progress=False)
             for ticker in still_missing:
                 df = raw.xs(ticker, axis=1, level=1)[["Open", "High", "Low", "Close", "Volume"]].copy()
                 df.index = pd.to_datetime(df.index)
@@ -79,14 +108,17 @@ def load_daily_data() -> dict[str, pd.DataFrame]:
     return result
 
 
-def _load_daily_from_alpaca(tickers: list[str]) -> dict[str, pd.DataFrame]:
+def _load_daily_from_alpaca(
+    tickers: list[str],
+    start: str | None = None,
+    end: str | None = None,
+) -> dict[str, pd.DataFrame]:
     """Fetches daily OHLCV for `tickers` from Alpaca's SIP feed in one batched request.
     Returns {} (not a partial result) if ALPACA_API_KEY/ALPACA_SECRET_KEY aren't
     configured, so the caller falls back to yfinance for all of them.
     """
-    api_key = os.environ.get("ALPACA_API_KEY")
-    secret_key = os.environ.get("ALPACA_SECRET_KEY")
-    if not api_key or not secret_key:
+    creds = _alpaca_credentials()
+    if creds is None:
         return {}
 
     from alpaca.data.enums import DataFeed
@@ -94,9 +126,14 @@ def _load_daily_from_alpaca(tickers: list[str]) -> dict[str, pd.DataFrame]:
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
 
+    api_key, secret_key = creds
     client = StockHistoricalDataClient(api_key, secret_key)
     request = StockBarsRequest(
-        symbol_or_symbols=tickers, timeframe=TimeFrame.Day, start=_START, end=_END, feed=DataFeed.SIP
+        symbol_or_symbols=tickers,
+        timeframe=TimeFrame.Day,
+        start=start or _START,
+        end=end or _data_end(),
+        feed=DataFeed.SIP,
     )
     bars = client.get_stock_bars(request).df
 
@@ -107,6 +144,86 @@ def _load_daily_from_alpaca(tickers: list[str]) -> dict[str, pd.DataFrame]:
         df.index = pd.to_datetime(df.index.date)
         result[ticker] = df
     return result
+
+
+def ensure_daily_date(ticker: str, date: str) -> pd.DataFrame:
+    """Return daily OHLCV for `ticker`, refreshing Alpaca SIP cache if `date` is missing."""
+    data = load_daily_data()
+    df = data[ticker]
+    target = pd.Timestamp(date).normalize()
+    if not df.index[df.index.normalize() == target].empty:
+        return df
+
+    refreshed = _load_daily_from_alpaca([ticker])
+    if ticker in refreshed:
+        df = refreshed[ticker]
+        (_DATA_DIR / f"{ticker}.parquet").parent.mkdir(exist_ok=True)
+        df.to_parquet(_DATA_DIR / f"{ticker}.parquet")
+        if not df.index[df.index.normalize() == target].empty:
+            return df
+
+    raise ValueError(f"No data for {ticker} on {date}")
+
+
+def _fetch_minute_bars_alpaca(ticker: str, start: str, end: str) -> pd.DataFrame | None:
+    """Fetch minute SIP bars for `ticker` between start/end (YYYY-MM-DD), session hours only."""
+    creds = _alpaca_credentials()
+    if creds is None:
+        return None
+
+    from alpaca.data.enums import DataFeed
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+
+    # Alpaca end is exclusive — bump by one day when requesting a single session.
+    end_ts = pd.Timestamp(end)
+    start_ts = pd.Timestamp(start)
+    if end_ts <= start_ts:
+        end_ts = start_ts + pd.Timedelta(days=1)
+    elif start == end:
+        end_ts = start_ts + pd.Timedelta(days=1)
+
+    api_key, secret_key = creds
+    client = StockHistoricalDataClient(api_key, secret_key)
+    request = StockBarsRequest(
+        symbol_or_symbols=[ticker],
+        timeframe=TimeFrame.Minute,
+        start=start,
+        end=end_ts.strftime("%Y-%m-%d"),
+        feed=DataFeed.SIP,
+    )
+    bars = client.get_stock_bars(request).df
+    if bars.empty:
+        return None
+
+    df = bars.xs(ticker, level="symbol")[["open", "high", "low", "close", "volume"]].copy()
+    df.index = df.index.tz_convert("America/New_York")
+    return df.between_time(_SESSION_START, _SESSION_END)
+
+
+def ensure_minute_day(ticker: str, date: pd.Timestamp) -> pd.DataFrame | None:
+    """Ensure minute SIP bars for `date` are in cache; fetch that day on demand if missing."""
+    path = _DATA_DIR / f"{ticker}_minute.parquet"
+    existing = pd.read_parquet(path) if path.exists() else None
+
+    if existing is not None and not existing[existing.index.date == date.date()].empty:
+        return existing
+
+    day_str = date.strftime("%Y-%m-%d")
+    fetched = _fetch_minute_bars_alpaca(ticker, day_str, day_str)
+    if fetched is None or fetched.empty:
+        return existing
+
+    if existing is not None:
+        merged = pd.concat([existing, fetched]).sort_index()
+        merged = merged[~merged.index.duplicated(keep="last")]
+    else:
+        merged = fetched
+
+    _DATA_DIR.mkdir(exist_ok=True)
+    merged.to_parquet(path)
+    return merged
 
 
 def load_minute_data(ticker: str) -> pd.DataFrame | None:
@@ -122,24 +239,12 @@ def load_minute_data(ticker: str) -> pd.DataFrame | None:
     if path.exists():
         return pd.read_parquet(path)
 
-    api_key = os.environ.get("ALPACA_API_KEY")
-    secret_key = os.environ.get("ALPACA_SECRET_KEY")
-    if not api_key or not secret_key:
+    if _alpaca_credentials() is None:
         return None
 
-    from alpaca.data.enums import DataFeed
-    from alpaca.data.historical import StockHistoricalDataClient
-    from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame
-
-    client = StockHistoricalDataClient(api_key, secret_key)
-    request = StockBarsRequest(
-        symbol_or_symbols=[ticker], timeframe=TimeFrame.Minute, start=_START, end=_END, feed=DataFeed.SIP
-    )
-    bars = client.get_stock_bars(request).df
-    df = bars.xs(ticker, level="symbol")[["open", "high", "low", "close", "volume"]].copy()
-    df.index = df.index.tz_convert("America/New_York")
-    df = df.between_time(_SESSION_START, _SESSION_END)
+    df = _fetch_minute_bars_alpaca(ticker, _START, _data_end())
+    if df is None or df.empty:
+        return None
 
     _DATA_DIR.mkdir(exist_ok=True)
     df.to_parquet(path)
@@ -186,18 +291,24 @@ def intraday_path_and_volume(
     n_slices: int,
     rng: np.random.Generator,
     minute_data: dict[str, pd.DataFrame] | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, str]:
     """Real-data-first version of (generate_intraday_path, u_shaped_volume_curve): uses
     real minute bars for `ticker`/`date` when available, else falls back to the synthetic
-    path and the synthetic U-shaped volume curve.
+    path and the synthetic U-shaped volume curve. Returns (path, volume_curve, data_source).
     """
     minute_df = (minute_data or {}).get(ticker)
     if minute_df is not None:
         real = real_intraday_path(minute_df, date, n_slices)
         if real is not None:
-            return real
+            return real[0], real[1], "real_minute"
 
-    return generate_intraday_path(day_row, n_slices, rng), u_shaped_volume_curve(n_slices)
+    minute_df = ensure_minute_day(ticker, date)
+    if minute_df is not None:
+        real = real_intraday_path(minute_df, date, n_slices)
+        if real is not None:
+            return real[0], real[1], "real_minute"
+
+    return generate_intraday_path(day_row, n_slices, rng), u_shaped_volume_curve(n_slices), "synthetic"
 
 
 def u_shaped_volume_curve(n_slices: int) -> np.ndarray:

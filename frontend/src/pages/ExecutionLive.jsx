@@ -6,13 +6,11 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 
-const TICK_MS = 350
-
 const POLICY_LABELS = {
   twap: 'TWAP',
   ppo: 'PPO',
   llm: 'Claude LLM',
-  fireworks: 'Llama (Fireworks)',
+  fireworks: 'GPT-OSS (Fireworks)',
 }
 
 export default function ExecutionLive() {
@@ -22,8 +20,8 @@ export default function ExecutionLive() {
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
   const [slice, setSlice] = useState(0)
-  const [playing, setPlaying] = useState(true)
-  const intervalRef = useRef(null)
+  const [done, setDone] = useState(false)
+  const esRef = useRef(null)
 
   useEffect(() => {
     fetch('/api/policies')
@@ -37,46 +35,84 @@ export default function ExecutionLive() {
       .catch(() => {})
   }, [])
 
+  const closeStream = () => {
+    if (esRef.current) {
+      esRef.current.close()
+      esRef.current = null
+    }
+  }
+
   const runEpisode = (selectedPolicy) => {
+    closeStream()
     setLoading(true)
     setError(null)
-    setPlaying(false)
-    fetch(`/api/episode?policy=${selectedPolicy}`)
-      .then(async res => {
-        if (!res.ok) throw new Error((await res.json()).detail || 'Failed to run episode')
-        return res.json()
+    setEpisode(null)
+    setSlice(0)
+    setDone(false)
+
+    const es = new EventSource(`/api/episode/stream?policy=${selectedPolicy}`)
+    esRef.current = es
+
+    es.addEventListener('meta', (e) => {
+      const meta = JSON.parse(e.data)
+      setEpisode({ ...meta, exec_prices: [], exec_quantities: [] })
+      setSlice(0)
+      setLoading(false)
+    })
+
+    es.addEventListener('slice', (e) => {
+      const { i, exec_price, exec_quantity } = JSON.parse(e.data)
+      setEpisode(prev => {
+        if (!prev) return prev
+        const exec_prices = [...prev.exec_prices]
+        const exec_quantities = [...prev.exec_quantities]
+        exec_prices[i] = exec_price
+        exec_quantities[i] = exec_quantity
+        return { ...prev, exec_prices, exec_quantities }
       })
-      .then(data => {
-        setEpisode(data)
-        setSlice(0)
-        setPlaying(true)
-      })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
+      setSlice(i + 1)
+    })
+
+    es.addEventListener('done', (e) => {
+      const data = JSON.parse(e.data)
+      setEpisode(prev => prev ? {
+        ...prev,
+        exec_prices: data.exec_prices,
+        exec_quantities: data.exec_quantities,
+        final_reward: data.final_reward,
+        filled_fraction: data.filled_fraction,
+      } : prev)
+      setDone(true)
+      closeStream()
+    })
+
+    // Fires for both our custom server `error` event (has data) and native
+    // connection errors (no data). EventSource would otherwise auto-reconnect, so we
+    // always close the stream here.
+    es.addEventListener('error', (e) => {
+      if (e.data) {
+        try {
+          setError(JSON.parse(e.data).detail || 'Stream error')
+        } catch {
+          setError('Stream error')
+        }
+      } else if (es.readyState === EventSource.CLOSED) {
+        setError('Connection to the live stream was lost')
+      }
+      setLoading(false)
+      closeStream()
+    })
   }
 
   useEffect(() => {
     runEpisode(policy)
+    return closeStream
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  useEffect(() => {
-    if (!playing || !episode) return
-    intervalRef.current = setInterval(() => {
-      setSlice(s => {
-        if (s >= episode.n_slices) {
-          setPlaying(false)
-          return s
-        }
-        return s + 1
-      })
-    }, TICK_MS)
-    return () => clearInterval(intervalRef.current)
-  }, [playing, episode])
-
   const filledFraction = episode ? slice / episode.n_slices : 0
   const slippageBps = episode ? currentSlippageBps(episode, slice) : null
-  const done = episode ? slice >= episode.n_slices : false
+  const streaming = episode && !done && !loading
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -86,14 +122,14 @@ export default function ExecutionLive() {
           <div>
             <h2 className="text-xl font-bold">Live Execution</h2>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              {episode ? `${episode.schedule_label} — run live by the backend simulator` : 'Running simulator episode…'}
+              {episode ? `${episode.schedule_label} — streamed live from the backend simulator` : 'Connecting to simulator…'}
             </p>
           </div>
           <div className="flex items-center gap-2">
             <select
               className="h-8 rounded-md border border-input bg-background px-2 text-xs"
               value={policy}
-              disabled={loading}
+              disabled={loading || streaming}
               onChange={e => { setPolicy(e.target.value); runEpisode(e.target.value) }}
             >
               {availablePolicies.map(p => (
@@ -103,11 +139,14 @@ export default function ExecutionLive() {
             {episode && <Badge variant="secondary">{episode.ticker}</Badge>}
             {episode && <Badge variant="secondary">{episode.side} {episode.total_shares.toLocaleString()} sh</Badge>}
             {loading ? (
-              <span className="animate-pulse text-xs text-muted-foreground">Simulating…</span>
+              <span className="animate-pulse text-xs text-muted-foreground">Connecting…</span>
             ) : done ? (
               <span className="text-xs font-medium text-green-500">✓ Complete</span>
             ) : (
-              <span className="animate-pulse text-xs text-muted-foreground">Running…</span>
+              <span className="flex items-center gap-1.5 text-xs font-medium text-red-500">
+                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-500" />
+                LIVE
+              </span>
             )}
           </div>
         </div>
@@ -124,7 +163,7 @@ export default function ExecutionLive() {
           </CardHeader>
           <CardContent>
             {episode ? <ExecutionChart episode={episode} currentSlice={slice} /> : (
-              <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">Loading…</div>
+              <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">Connecting…</div>
             )}
           </CardContent>
         </Card>
@@ -156,19 +195,17 @@ export default function ExecutionLive() {
         </div>
 
         <div className="mt-4 flex gap-2">
-          {done ? (
-            <Button onClick={() => runEpisode(policy)} disabled={loading}>New episode</Button>
-          ) : (
-            <Button variant="outline" onClick={() => setPlaying(p => !p)} disabled={!episode}>
-              {playing ? 'Pause' : 'Resume'}
-            </Button>
-          )}
+          <Button onClick={() => runEpisode(policy)} disabled={loading || streaming}>
+            {done ? 'New episode' : streaming ? 'Streaming…' : 'Run episode'}
+          </Button>
         </div>
 
         {episode?.llm_reasoning && (
           <Card className="mt-4">
             <CardContent className="pt-4">
-              <p className="mb-1 text-xs font-medium text-muted-foreground uppercase tracking-wide">Claude reasoning</p>
+              <p className="mb-1 text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                {policy === 'fireworks' ? 'GPT-OSS reasoning' : 'Claude reasoning'}
+              </p>
               <p className="text-sm leading-relaxed">{episode.llm_reasoning}</p>
               {episode.llm_primitive && (
                 <p className="mt-2 text-xs text-muted-foreground">

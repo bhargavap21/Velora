@@ -17,8 +17,15 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+import pandas as pd
+
 from execution_env.simulator.benchmark import _MAX_SLIPPAGE_BPS, compute_vwap, execution_vwap, slippage_reward
-from execution_env.simulator.market_sim import ImpactModel, intraday_path_and_volume, load_daily_data, load_minute_data
+from execution_env.simulator.market_sim import (
+    ImpactModel,
+    intraday_path_and_volume,
+    load_daily_data,
+    load_minute_data,
+)
 
 _TICKERS = ["TSLA", "NVDA", "AAPL", "SPY"]
 _N_SLICES = 26  # e.g. 15-min slices across a 6.5h trading day
@@ -102,18 +109,36 @@ class ExecutionEnv(gym.Env):
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
-        ticker = self._tickers_choice()
+        options = options or {}
+
+        if "ticker" in options:
+            ticker = options["ticker"]
+            if ticker not in self._tickers:
+                raise ValueError(f"ticker {ticker!r} not in {self._tickers}")
+        else:
+            ticker = self._tickers_choice()
         self._ticker = ticker
+
         df = self._data[ticker]
-        lo = int(len(df) * self._day_range[0])
-        hi = max(lo + 1, int(len(df) * self._day_range[1]))
-        day_idx = lo + int(self.np_random.integers(hi - lo))
-        day_row = df.iloc[day_idx]
+        if "date" in options:
+            target = pd.Timestamp(options["date"]).normalize()
+            matches = df.index[df.index.normalize() == target]
+            if matches.empty:
+                raise ValueError(f"No data for {ticker} on {options['date']}")
+            day_ts = matches[0]
+            day_row = df.loc[day_ts]
+        else:
+            lo = int(len(df) * self._day_range[0])
+            hi = max(lo + 1, int(len(df) * self._day_range[1]))
+            day_idx = lo + int(self.np_random.integers(hi - lo))
+            day_ts = df.index[day_idx]
+            day_row = df.iloc[day_idx]
 
         rng = np.random.default_rng(seed)
-        self._path, self._volume_curve = intraday_path_and_volume(
-            ticker, df.index[day_idx], day_row, self._n_slices, rng, self._minute_data
+        self._path, self._volume_curve, data_source = intraday_path_and_volume(
+            ticker, day_ts, day_row, self._n_slices, rng, self._minute_data
         )
+
         adv = float(day_row["Volume"])
         self._impact = ImpactModel(adv=adv)
 
@@ -125,10 +150,16 @@ class ExecutionEnv(gym.Env):
 
         info = {
             "ticker": ticker,
+            "date": day_ts.strftime("%Y-%m-%d"),
+            "side": self._side,
             "open_price": float(self._path[0]),
+            "close_price": float(day_row["Close"]),
+            "adv": adv,
+            "data_source": data_source,
             "volume_curve": self._volume_curve.tolist(),
             "n_slices": self._n_slices,
             "total_shares": self._total_shares,
+            "seed": seed,
         }
         return self._build_obs(), info
 

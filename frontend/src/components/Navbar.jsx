@@ -7,6 +7,7 @@ export default function Navbar() {
       <div className="flex items-center gap-4 text-sm text-muted-foreground">
         <Link to="/" className="hover:text-foreground">Home</Link>
         <Link to="/execution-demo" className="hover:text-foreground">Live Demo</Link>
+        <Link to="/sandbox" className="hover:text-foreground">Sandbox</Link>
       </div>
     </nav>
   )

@@ -2,8 +2,9 @@
 Open-source-model execution-schedule agent via Fireworks AI.
 
 Uses the same schedule-primitive approach as llm_agent.py (front_load, back_load,
-follow_volume_curve, twap) but calls a Fireworks-hosted Llama model via their
-OpenAI-compatible chat completions endpoint instead of the Anthropic SDK.
+follow_volume_curve, twap) but calls a Fireworks-hosted open-weight model (OpenAI's
+gpt-oss-120b) via their OpenAI-compatible chat completions endpoint instead of the
+Anthropic SDK -- the open-source comparison arm against the closed Claude agent.
 
 Requires FIREWORKS_API_KEY in the environment.
 """
@@ -23,7 +24,12 @@ from execution_env.agents.llm_agent import (
 )
 
 _FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
-_MODEL = "accounts/fireworks/models/llama-v3p3-70b-instruct"
+# OpenAI's open-weight model on Fireworks serverless -- the open-source comparison arm
+# against the closed Claude agent. gpt-oss emits chain-of-thought into a separate
+# `reasoning_content` field and the final answer into `content`, so we give it enough
+# token budget to finish reasoning *and* emit the JSON.
+_MODEL = "accounts/fireworks/models/gpt-oss-120b"
+_MAX_TOKENS = 2048
 
 
 def _get_client() -> OpenAI:
@@ -50,14 +56,18 @@ def propose_schedule(
 
     response = client.chat.completions.create(
         model=_MODEL,
-        max_tokens=512,
+        max_tokens=_MAX_TOKENS,
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ],
         temperature=0.2,
     )
-    raw = response.choices[0].message.content or ""
+    message = response.choices[0].message
+    # gpt-oss puts the answer in `content`; some reasoning models leave `content`
+    # empty and emit everything (including the JSON) into `reasoning_content`. Fall
+    # back to the latter so schedule_from_response can still find the JSON object.
+    raw = message.content or getattr(message, "reasoning_content", None) or ""
     multipliers, parsed = schedule_from_response(raw, n_slices, np.asarray(volume_curve, dtype=float))
     return multipliers, parsed, raw
 
