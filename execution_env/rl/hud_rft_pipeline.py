@@ -33,13 +33,21 @@ which can't form a GRPO group (N rollouts of the SAME prompt). env.py::execution
 takes the scenario as explicit args instead -- build N Task instances with identical
 args (see collect_group() below) to form one group.
 
+Backend/model decision -- RESOLVED (Path A, HUD-native): forked a team-owned trainable
+copy of Qwen3 8B (Tinker) via `hud models fork`, named `velora-execution-rft-qwen3-8b`.
+Chosen over DeepSeek V3.1/Qwen3-30B/GPT-OSS-20B (also available, Trainable=true on this
+account) for being the cheapest/fastest to iterate on for a hackathon timeline -- if RFT
+can beat zero-shot's 0.0 bps baseline at all, an 8B model should show it fastest. Verified
+real and trainable: `TrainingClient("velora-execution-rft-qwen3-8b").available_losses()`
+-> ['cispo', 'cross_entropy', 'dro', 'importance_sampling', 'ppo'].
+
 Usage:
     .venv/bin/python -m execution_env.rl.hud_rft_pipeline   # prints the plan only.
     # To actually collect a group (real LLM inference cost via HUD):
     #   import asyncio; from execution_env.rl.hud_rft_pipeline import collect_group
-    #   runs = asyncio.run(collect_group(scenario, model="claude-sonnet-4-6"))
-    # Real training (TrainingClient.step) is intentionally not wired up here -- needs an
-    # explicit model-selection decision and costs real training compute/credits.
+    #   runs = asyncio.run(collect_group(scenario, model=MODEL))
+    # Real training (TrainingClient.step) is intentionally not wired up here -- costs real
+    # training compute/credits, gated on validating collect_group() end-to-end first.
 """
 
 from __future__ import annotations
@@ -48,6 +56,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+MODEL = "velora-execution-rft-qwen3-8b"  # forked, team-owned trainable copy of Qwen3 8B (Tinker)
 GROUP_SIZE = 8  # rollouts per GRPO group -- a starting guess, not tuned
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ENV_PY = _REPO_ROOT / "execution_env" / "env.py"
@@ -95,14 +104,14 @@ async def collect_group(scenario: dict[str, Any], model: str, group_size: int = 
 def describe_pipeline() -> None:
     print(__doc__)
     print(
-        "\nNext steps once ready to spend real cost:\n"
-        "  1. Pick a target model + confirm it's enabled for HUD training "
-        "(TrainingClient(model).available_losses()).\n"
-        "  2. runs = await collect_group(scenario, model=...) -- one real group "
+        f"\nModel decision made: {MODEL} (forked Qwen3 8B (Tinker), available_losses "
+        "verified real).\n"
+        "Next steps once ready to spend real cost:\n"
+        f"  1. runs = await collect_group(scenario, model=MODEL) -- one real group "
         f"({GROUP_SIZE} rollouts), real LLM inference cost via HUD.\n"
-        "  3. client.step(runs, learning_rate=..., loss_fn='importance_sampling', "
+        "  2. client.step(runs, learning_rate=..., loss_fn='importance_sampling', "
         f"group_size={GROUP_SIZE}) -- a real training call, not wired up here.\n"
-        "  4. Re-eval the new checkpoint (client.head()) against "
+        "  3. Re-eval the new checkpoint (client.head()) against "
         "sanity_eval_random_task.py's task distribution; compare to the base-model gap "
         "already recorded there."
     )
