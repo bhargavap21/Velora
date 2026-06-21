@@ -15,16 +15,16 @@ export const hudEval = {
   model: 'claude-sonnet-4-6',
   runtime: 'HUD gateway (local rollout)',
   date: '2026-06-20',
-  jobUrl: 'https://hud.ai/jobs/79f7ed9e46b047b1ad709d5c03aee3e7',
+  jobUrl: 'https://hud.ai/jobs/3e476dd34f514ec19d642fee652c5498',
   baselineScore: 0.5, // normalized reward equivalent to matching VWAP
   meanScore: 0.573,
   stdScore: 0.114,
   tasksBeatBenchmark: 2,
   tasksTotal: 3,
   tasks: [
-    { id: 'buy-10k-aapl', label: 'Buy 10k AAPL', score: 0.537, beat: true },
-    { id: 'buy-10k-tsla', label: 'Buy 10k TSLA', score: 0.728, beat: true },
-    { id: 'sell-10k-spy', label: 'Sell 10k SPY', score: 0.456, beat: false },
+    { id: 'buy-10k-aapl', label: 'Buy 10k AAPL', score: 0.536, beat: true },
+    { id: 'buy-10k-tsla', label: 'Buy 10k TSLA', score: 0.727, beat: true },
+    { id: 'sell-10k-spy', label: 'Sell 10k SPY', score: 0.455, beat: false },
   ],
 }
 
