@@ -15,9 +15,18 @@ import logging
 import random
 import sys
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+# hud.eval.LocalRuntime spawns this file as a child process with cwd set to
+# execution_env/ (this file's own directory), so the repo root isn't on sys.path and the
+# absolute `execution_env.*` imports below fail with ModuleNotFoundError unless we put it
+# there ourselves. Must run before those imports.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from execution_env.agents.llm_agent import _extract_json
 from execution_env.rl.execution_gym_env import ExecutionEnv, _N_SLICES, _TOTAL_SHARES
