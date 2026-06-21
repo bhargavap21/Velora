@@ -260,17 +260,23 @@ export default function Home() {
                 model never trained on — same paired price paths, the only variable is the policy.
               </p>
             </div>
-            <div className="grid grid-cols-2 divide-x divide-[#2e3038] border-t border-[#2e3038]">
-              <div className="px-6 py-4">
-                <p className="text-[11px] font-light text-[#5e616e]">Median advantage</p>
+            <div className="grid grid-cols-3 divide-x divide-[#2e3038] border-t border-[#2e3038]">
+              <div className="px-5 py-4">
+                <p className="text-[11px] font-light text-[#5e616e]">Median edge</p>
                 <p className="mt-1 text-[16px] font-semibold text-[#cc9166]" style={{ fontVariantNumeric: 'tabular-nums' }}>
                   {formatBps(ppoHoldout.medianAdvantageBps)}
                 </p>
               </div>
-              <div className="px-6 py-4">
-                <p className="text-[11px] font-light text-[#5e616e]">Avg order size</p>
+              <div className="px-5 py-4">
+                <p className="text-[11px] font-light text-[#5e616e]">Significance</p>
+                <p className="mt-1 text-[16px] font-semibold text-[#cc9166]" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                  t = {ppoHoldout.tStat.toFixed(2)}
+                </p>
+              </div>
+              <div className="px-5 py-4">
+                <p className="text-[11px] font-light text-[#5e616e]">Avg order</p>
                 <p className="mt-1 text-[16px] font-semibold text-[#e2e3e9]" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  {formatUsd(ppoHoldout.meanNotionalUsd)}
+                  {formatUsd(ppoHoldout.meanNotionalUsd, { notation: 'compact', maximumFractionDigits: 1 })}
                 </p>
               </div>
             </div>
