@@ -9,7 +9,13 @@ from execution_env.simulator.benchmark import (
     execution_vwap,
     slippage_reward,
 )
-from execution_env.simulator.market_sim import ImpactModel, generate_intraday_path, u_shaped_volume_curve
+from execution_env.simulator import market_sim
+from execution_env.simulator.market_sim import (
+    ImpactModel,
+    ensure_daily_data,
+    generate_intraday_path,
+    u_shaped_volume_curve,
+)
 
 
 def test_u_shaped_volume_curve_sums_to_one():
@@ -129,3 +135,33 @@ def test_impact_model_grows_superlinearly_for_outsized_orders():
     perm_high = model.permanent_impact(45_000, slice_volume)
     assert temp_high / temp_low > 10
     assert perm_high / perm_low > 10
+
+
+def test_ensure_daily_data_fetches_uncached_ticker_via_alpaca(monkeypatch, tmp_path):
+    """A ticker outside DEFAULT_TICKERS with no parquet cache should resolve through the
+    Alpaca path (mocked here so this stays offline) rather than only ever working for the
+    curated default set."""
+    monkeypatch.setattr(market_sim, "_DATA_DIR", tmp_path)
+    fake_df = pd.DataFrame(
+        {"Open": [10.0], "High": [11.0], "Low": [9.0], "Close": [10.5], "Volume": [1_000_000.0]},
+        index=pd.to_datetime(["2024-01-02"]),
+    )
+    monkeypatch.setattr(market_sim, "_load_daily_from_alpaca", lambda tickers, start=None, end=None: {"ZZZZ": fake_df})
+
+    df = ensure_daily_data("ZZZZ")
+    assert list(df["Close"]) == [10.5]
+    assert (tmp_path / "ZZZZ.parquet").exists()  # cached for next time
+
+
+def test_ensure_daily_data_raises_on_unresolvable_ticker(monkeypatch, tmp_path):
+    """No cache, no Alpaca creds/result, and yfinance returning nothing should raise a
+    clean ValueError (the shape server.py turns into an HTTP 400), not a KeyError."""
+    monkeypatch.setattr(market_sim, "_DATA_DIR", tmp_path)
+    monkeypatch.setattr(market_sim, "_load_daily_from_alpaca", lambda tickers, start=None, end=None: {})
+    monkeypatch.setattr(market_sim.yf, "download", lambda *a, **k: pd.DataFrame())
+
+    try:
+        ensure_daily_data("NOTAREALTICKER")
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "NOTAREALTICKER" in str(exc)

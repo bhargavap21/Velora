@@ -27,7 +27,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-_TICKERS = ["TSLA", "NVDA", "AAPL", "SPY"]
+DEFAULT_TICKERS = ["TSLA", "NVDA", "AAPL", "SPY"]
+# Back-compat alias -- this used to be a hard allowlist; it's now just the curated
+# default set shown in the UI. Arbitrary tickers go through ensure_daily_data() instead.
+_TICKERS = DEFAULT_TICKERS
 _START = "2022-01-01"
 _DATA_DIR = Path(__file__).parent.parent / "data_cache"
 _SESSION_START = "09:30"
@@ -162,6 +165,10 @@ def _load_daily_from_alpaca(
 
     result = {}
     for ticker in tickers:
+        # Alpaca silently omits unknown/delisted symbols from the response rather than
+        # erroring, so bars can be empty or missing this ticker's level entirely.
+        if bars.empty or ticker not in bars.index.get_level_values("symbol"):
+            continue
         df = bars.xs(ticker, level="symbol")[["open", "high", "low", "close", "volume"]].copy()
         df.columns = ["Open", "High", "Low", "Close", "Volume"]
         df.index = pd.to_datetime(df.index.date)
@@ -169,10 +176,51 @@ def _load_daily_from_alpaca(
     return result
 
 
+def ensure_daily_data(ticker: str) -> pd.DataFrame:
+    """Return daily OHLCV for an arbitrary `ticker`, fetching + caching on demand if it
+    isn't already in data_cache/. Generalizes load_daily_data() (which only loads the
+    curated DEFAULT_TICKERS) to any symbol: try the parquet cache, then Alpaca SIP, then
+    yfinance. Raises ValueError if no provider returns data for the symbol.
+    """
+    path = _DATA_DIR / f"{ticker}.parquet"
+    if path.exists():
+        df = pd.read_parquet(path)
+        if not _daily_cache_stale(df):
+            return df
+    else:
+        df = None
+
+    refreshed = _load_daily_from_alpaca([ticker])
+    if ticker in refreshed and not refreshed[ticker].empty:
+        df = refreshed[ticker]
+        _DATA_DIR.mkdir(exist_ok=True)
+        df.to_parquet(path)
+        return df
+
+    if df is not None:
+        # Stale cache but refresh failed (e.g. no Alpaca creds) -- stale beats nothing.
+        return df
+
+    raw = yf.download(ticker, start=_START, end=_data_end(), auto_adjust=True, progress=False)
+    if raw.empty:
+        raise ValueError(f"No market data found for {ticker!r}")
+    # yf.download returns MultiIndex (field, ticker) columns even for a single symbol.
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw = raw.xs(ticker, axis=1, level=1)
+    raw = raw[["Open", "High", "Low", "Close", "Volume"]].copy()
+    raw.index = pd.to_datetime(raw.index)
+    raw.dropna(inplace=True)
+    if raw.empty:
+        raise ValueError(f"No market data found for {ticker!r}")
+    _DATA_DIR.mkdir(exist_ok=True)
+    raw.to_parquet(path)
+    return raw
+
+
 def ensure_daily_date(ticker: str, date: str) -> pd.DataFrame:
-    """Return daily OHLCV for `ticker`, refreshing Alpaca SIP cache if `date` is missing."""
-    data = load_daily_data()
-    df = data[ticker]
+    """Return daily OHLCV for `ticker` that includes `date`, refreshing the cache if the
+    date is missing (e.g. a recent trading day not yet in the cached parquet)."""
+    df = ensure_daily_data(ticker)
     target = pd.Timestamp(date).normalize()
     if not df.index[df.index.normalize() == target].empty:
         return df

@@ -22,7 +22,11 @@ execution_env/
     benchmark.py             VWAP/TWAP calculation + slippage reward
   rl/
     execution_gym_env.py     gymnasium.Env wrapper around the simulator
-    train_ppo.py             SB3 PPO baseline training
+    train_ppo.py             SB3 PPO baseline training (local CLI + reusable training/eval
+                             functions shared with modal_train.py)
+    prime_data_cache.py      One-time data fetch for the expanded TRAIN_TICKERS universe
+    modal_train.py           Runs training on Modal instead of the local machine
+    hud_ppo_agent.py         Rolls the trained PPO policy out through the real HUD MCP env
   agents/
     llm_agent.py             Claude-driven execution-schedule agent
     fireworks_agent.py       Open-source-model agent via Fireworks (gpt-oss comparison arm)
@@ -50,18 +54,47 @@ execution_env/
   `GET /api/episode/stream`; Live + Sandbox pages render each slice as the backend
   produces it. Covered by `tests/test_server.py`.
 
+- [x] **Any ticker, not just the curated 4** — `market_sim.ensure_daily_data()` fetches +
+  caches any symbol on demand (Alpaca, falling back to yfinance), `ExecutionEnv` resolves
+  tickers lazily instead of only ever loading `DEFAULT_TICKERS`, and `server.py` /
+  the Sandbox/Showdown/Proof pages accept free-text ticker input with a clean 400 on an
+  unresolvable symbol instead of a fixed allowlist.
+- [x] **Liquidity/volatility-aware observation** — `_build_obs()` adds `log_adv_norm` and
+  `vol_regime_norm` (5 → 7 obs dims) so the policy can condition on how thin/thick and how
+  volatile *this* ticker/day is, instead of only ever having seen a handful of similar
+  large-cap names. **Breaking change**: invalidates any checkpoint trained on the old 5-dim
+  observation space.
+- [x] **Modal training pipeline** (`rl/modal_train.py`, `rl/prime_data_cache.py`) — trains
+  against an expanded ~50-ticker universe (`train_ppo.TRAIN_TICKERS`, spanning mega-cap to
+  small-cap to ETFs) on Modal instead of the local machine. See "Training on Modal" below.
+
 ### Remaining / nice-to-have
 
 - [ ] **PPO is fixed to 26 slices** — retrain per-timeframe if the sandbox should support
   PPO at other slice counts.
-- [ ] **PPO's edge is order-size dependent** — clear, statistically significant advantage
-  (83-95% win-rate) at institutional sizes (~8% of ADV) where participation-driven impact
-  dominates; at the small 10k-share size used in the HUD tasks, impact is too small for
-  scheduling to matter and PPO is roughly a coin flip vs. VWAP-match (~47% win-rate). Reward
-  shaping that makes the small-order regime matter (or training data weighted toward it)
-  would close that gap.
+- [ ] **Re-run the Modal training job and refresh benchmarks** — the observation-space
+  change above invalidates the committed checkpoint that the numbers in "Benchmark results"
+  below are measured against. Those numbers describe the *previous* (5-dim obs, 4-ticker)
+  checkpoint, kept here as the last verified result, not the current code. Don't update
+  this section or `frontend/src/data/benchmarks.js` until a new checkpoint has actually been
+  trained on Modal and independently re-evaluated (same standard as the rest of this file:
+  reproduce, don't transcribe).
+- [ ] **PPO's edge was order-size dependent on the old checkpoint** — clear, statistically
+  significant advantage (83-95% win-rate) at institutional sizes (~8% of ADV) where
+  participation-driven impact dominates; at the small 10k-share size used in the HUD tasks,
+  impact was too small for scheduling to matter and PPO was roughly a coin flip vs.
+  VWAP-match (~47% win-rate). The expanded training universe + liquidity/volatility
+  observation features are aimed at closing this gap — re-verify after retraining rather
+  than assuming it's fixed.
 
 ## Benchmark results
+
+> **Stale relative to current code.** These numbers are the last verified result against
+> the *previous* PPO checkpoint (5-dim observation, trained on the curated 4-ticker
+> `DEFAULT_TICKERS` set). The observation-space and training-universe changes above
+> invalidate this checkpoint. Kept here as history, not a current claim, until the Modal
+> job produces a new checkpoint and someone re-runs the same reproduction this section
+> describes — see the "Remaining" TODO above.
 
 Reward is normalized so 0.50 = the impact-free VWAP benchmark price.
 
@@ -113,3 +146,28 @@ Real-data replay works offline: the committed `data_cache/*.parquet` files are r
 any network call, so the demo runs with no API keys. Set `ALPACA_API_KEY` /
 `ALPACA_SECRET_KEY` to refresh or extend the cache, `ANTHROPIC_API_KEY` for the Claude
 policy, and `FIREWORKS_API_KEY` for the gpt-oss policy.
+
+Any ticker works, not just the curated `DEFAULT_TICKERS` (`TSLA, NVDA, AAPL, SPY`) shown
+as UI suggestions — `ensure_daily_data()` fetches + caches an unseen symbol on demand
+(Alpaca, falling back to yfinance), raising a clean error for a symbol no provider
+recognizes rather than a 500.
+
+## Training on Modal
+
+`rl/train_ppo.py` still runs locally (`python -m execution_env.rl.train_ppo`) with the
+curated 4-ticker default for a quick sanity-check run. For the real training run — the
+expanded ~50-ticker `TRAIN_TICKERS` universe, more timesteps, more parallel envs — use
+Modal instead of burdening the local machine:
+
+```bash
+pip install modal                                                  # already in requirements.txt
+modal setup                                                         # one-time browser auth
+modal secret create alpaca-creds \
+    ALPACA_API_KEY=... ALPACA_SECRET_KEY=...                        # one-time, from your .env
+modal run execution_env/rl/modal_train.py
+```
+
+This primes the data cache for `TRAIN_TICKERS` on a Modal Volume (skipping any symbol that
+fails to resolve, logged rather than fatal — see `rl/prime_data_cache.py`), trains, and
+writes the resulting checkpoint + training-curve PNG back to the local `results/`
+directory. `server.py`'s `_get_ppo_model()` picks up the new checkpoint automatically.

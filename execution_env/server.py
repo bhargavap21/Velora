@@ -34,7 +34,7 @@ from sse_starlette.sse import EventSourceResponse
 from execution_env.rl.execution_gym_env import (
     ExecutionEnv,
     _N_SLICES,
-    _TICKERS,
+    _OBS_DIM,
     _TOTAL_SHARES,
     naive_twap_action,
 )
@@ -51,7 +51,7 @@ from execution_env.sandbox_config import (
     shares_from_capital,
 )
 from execution_env.simulator.benchmark import compute_vwap, execution_vwap
-from execution_env.simulator.market_sim import ensure_daily_date, load_daily_data
+from execution_env.simulator.market_sim import ensure_daily_data, ensure_daily_date, load_daily_data
 
 app = FastAPI(title="Velora execution API")
 
@@ -69,19 +69,39 @@ _DEFAULT_TICK_MS = 250
 _ppo_model = None
 
 
+_ppo_model_error: str | None = None
+
+
 def _get_ppo_model():
     """Lazily loads the PPO checkpoint on first request; cached after that. Returns
-    None if no checkpoint has been trained yet (see train_ppo.py).
+    None if no checkpoint has been trained yet (see train_ppo.py), or if the checkpoint's
+    observation-space shape doesn't match the current ExecutionEnv (e.g. after an obs-space
+    change like the liquidity/volatility features -- see _OBS_DIM) -- in which case
+    `_ppo_model_error()` explains why, so callers can return a clear 503 instead of a raw
+    shape-mismatch crash from stable_baselines3.
 
     Re-checks for the checkpoint on every call until one is successfully loaded, so a
     server started *before* training finishes will pick up the checkpoint as soon as
     it appears -- without needing a restart."""
-    global _ppo_model
+    global _ppo_model, _ppo_model_error
     if _ppo_model is None and MODEL_PATH.exists():
         from stable_baselines3 import PPO
 
-        _ppo_model = PPO.load(MODEL_PATH)
+        loaded = PPO.load(MODEL_PATH)
+        loaded_dim = loaded.observation_space.shape[0]
+        if loaded_dim != _OBS_DIM:
+            _ppo_model_error = (
+                f"PPO checkpoint at {MODEL_PATH} was trained on a {loaded_dim}-dim "
+                f"observation space, but the current ExecutionEnv produces {_OBS_DIM} dims "
+                "-- retrain it (see 'Training on Modal' in execution_env/README.md)."
+            )
+        else:
+            _ppo_model = loaded
     return _ppo_model
+
+
+def _ppo_model_unavailable_message() -> str:
+    return _ppo_model_error or "No PPO checkpoint found -- run `python -m execution_env.rl.train_ppo` first."
 
 
 # Defensive clip (in bps) on the reported per-episode slippage metric. See _episode_metrics.
@@ -201,12 +221,11 @@ def _validate_slices(n_slices: int) -> None:
         )
 
 
-def _resolve_date(ticker: str, date: str | None, regime: str | None, seed: int | None) -> str | None:
+def _resolve_date(df: pd.DataFrame, date: str | None, regime: str | None, seed: int | None) -> str | None:
     """Resolve explicit date or regime sample into a YYYY-MM-DD string."""
     if date:
         return date
     if regime and regime != "random":
-        df = load_daily_data()[ticker]
         return resolve_regime_date(df, regime, seed)
     return None
 
@@ -311,8 +330,10 @@ def _build_context(
     All fallible work happens here (synchronously) so both endpoints fail fast with a
     proper HTTP status before any streaming begins.
     """
-    if ticker not in _TICKERS:
-        raise HTTPException(400, f"ticker must be one of {_TICKERS}")
+    try:
+        df = ensure_daily_data(ticker)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     _validate_slices(n_slices)
 
@@ -326,9 +347,7 @@ def _build_context(
     if policy == "ppo":
         ppo_model = _get_ppo_model()
         if ppo_model is None:
-            raise HTTPException(
-                503, "No PPO checkpoint found -- run `python -m execution_env.rl.train_ppo` first."
-            )
+            raise HTTPException(503, _ppo_model_unavailable_message())
 
     if policy == "llm" and not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(503, "ANTHROPIC_API_KEY not set -- add it to your .env file.")
@@ -336,24 +355,22 @@ def _build_context(
     if policy == "fireworks" and not os.environ.get("FIREWORKS_API_KEY"):
         raise HTTPException(503, "FIREWORKS_API_KEY not set -- add it to your .env file.")
 
-    resolved_date = _resolve_date(ticker, date, regime, seed)
+    resolved_date = _resolve_date(df, date, regime, seed)
     if resolved_date:
         try:
-            ensure_daily_date(ticker, resolved_date)
+            df = ensure_daily_date(ticker, resolved_date)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
     shares = total_shares if total_shares is not None else _TOTAL_SHARES
     # Precedence: adv_pct (institutional sizing) > capital_usd > explicit total_shares.
     if adv_pct is not None:
-        df = load_daily_data()[ticker]
         ref_adv = float(df["Volume"].median())
         try:
             shares = shares_from_adv_pct(adv_pct, ref_adv)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
     elif capital_usd is not None:
-        df = load_daily_data()[ticker]
         if resolved_date:
             ref_price = float(df.loc[pd.Timestamp(resolved_date), "Open"])
         else:
@@ -539,7 +556,7 @@ async def get_episode_stream(
 def get_policies():
     # naive_twap and twap are always available (pure simulator policies, no model/key).
     available = ["naive_twap", "twap"]
-    if MODEL_PATH.exists():
+    if _get_ppo_model() is not None:
         available.append("ppo")
     if os.environ.get("ANTHROPIC_API_KEY"):
         available.append("llm")
@@ -655,12 +672,21 @@ async def eval_stream(
     if "ppo" in (policy, baseline):
         ppo_model = _get_ppo_model()
         if ppo_model is None:
+            message = _ppo_model_unavailable_message()
+
             async def model_err():
-                yield {"event": "error", "data": json.dumps({"detail": "No PPO checkpoint found."})}
+                yield {"event": "error", "data": json.dumps({"detail": message})}
             return EventSourceResponse(model_err())
 
+    try:
+        ticker_df = ensure_daily_data(ticker)
+    except ValueError as exc:
+        async def ticker_err():
+            yield {"event": "error", "data": json.dumps({"detail": str(exc)})}
+        return EventSourceResponse(ticker_err())
+
     if adv_pct is not None:
-        ref_adv = float(load_daily_data()[ticker]["Volume"].median())
+        ref_adv = float(ticker_df["Volume"].median())
         shares = shares_from_adv_pct(adv_pct, ref_adv)
     else:
         shares = total_shares if total_shares is not None else _TOTAL_SHARES

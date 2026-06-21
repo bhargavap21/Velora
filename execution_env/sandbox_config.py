@@ -5,9 +5,18 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from execution_env.simulator.market_sim import _SESSION_END, _SESSION_START, _START, _data_end, load_daily_data
+from execution_env.simulator.market_sim import (
+    DEFAULT_TICKERS,
+    _SESSION_END,
+    _SESSION_START,
+    _START,
+    _data_end,
+    load_daily_data,
+)
 
-_TICKERS = ["TSLA", "NVDA", "AAPL", "SPY"]
+# Curated suggestions for the UI's ticker datalist -- not a validation allowlist.
+# Any symbol the data layer can resolve (ensure_daily_data) is a valid request.
+_TICKERS = DEFAULT_TICKERS
 _N_SLICES = 26
 _TOTAL_SHARES = 10_000
 

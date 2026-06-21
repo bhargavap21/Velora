@@ -145,9 +145,15 @@ export default function ExecutionSandbox() {
             <CardContent className="space-y-4">
               <div>
                 <label className="mb-1 block text-xs font-medium text-muted-foreground">Ticker</label>
-                <select className={inputClass} value={form.ticker} onChange={e => update({ ticker: e.target.value })}>
-                  {cfg.tickers.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
+                <input className={inputClass} list="ticker-suggestions" value={form.ticker}
+                  placeholder="Any symbol, e.g. MSFT"
+                  onChange={e => update({ ticker: e.target.value.toUpperCase() })} />
+                <datalist id="ticker-suggestions">
+                  {cfg.tickers.map(t => <option key={t} value={t} />)}
+                </datalist>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Any ticker works — data is fetched on first use. Suggestions are just the curated set.
+                </p>
               </div>
 
               <div>

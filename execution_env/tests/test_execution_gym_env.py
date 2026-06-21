@@ -32,12 +32,12 @@ def test_action_never_oversells():
 def test_observation_shape_and_bounds():
     env = ExecutionEnv()
     obs, _ = env.reset(seed=2)
-    assert obs.shape == (5,)
+    assert obs.shape == (7,)
     assert env.observation_space.contains(obs)
     for _ in range(env._n_slices):
         action = env.action_space.sample()
         obs, reward, terminated, truncated, _ = env.step(action)
-        assert obs.shape == (5,)
+        assert obs.shape == (7,)
         assert env.observation_space.contains(obs)
         if terminated or truncated:
             break

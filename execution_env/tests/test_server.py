@@ -37,13 +37,45 @@ def _parse_sse(text):
     return events
 
 
-def test_policies_lists_twap_and_ppo():
+def test_policies_lists_twap():
     r = client.get("/api/policies")
     assert r.status_code == 200
     available = r.json()["available"]
     assert "twap" in available
-    # PPO checkpoint is committed to the repo, so it must be advertised.
-    assert "ppo" in available
+
+
+def _mock_mismatched_ppo_model(monkeypatch):
+    """Simulates a checkpoint trained on a different observation-space shape than the
+    current ExecutionEnv (e.g. before the liquidity/volatility obs features were added),
+    independent of whatever the actually-committed checkpoint's shape happens to be at
+    any given time -- _get_ppo_model()'s mismatch-detection branch is what's under test."""
+    import execution_env.server as server_module
+    from gymnasium import spaces
+
+    class _FakeModel:
+        observation_space = spaces.Box(low=0.0, high=1.0, shape=(3,))
+
+    class _FakePath:
+        def exists(self):
+            return True
+
+    monkeypatch.setattr(server_module, "_ppo_model", None)
+    monkeypatch.setattr(server_module, "_ppo_model_error", None)
+    monkeypatch.setattr(server_module, "MODEL_PATH", _FakePath())
+    monkeypatch.setattr("stable_baselines3.PPO.load", lambda *a, **k: _FakeModel())
+
+
+def test_policies_excludes_ppo_when_checkpoint_obs_space_mismatched(monkeypatch):
+    _mock_mismatched_ppo_model(monkeypatch)
+    r = client.get("/api/policies")
+    assert "ppo" not in r.json()["available"]
+
+
+def test_episode_ppo_with_incompatible_checkpoint_returns_clean_503(monkeypatch):
+    _mock_mismatched_ppo_model(monkeypatch)
+    r = client.get("/api/episode?policy=ppo&ticker=AAPL&total_shares=10000")
+    assert r.status_code == 503
+    assert "observation space" in r.json()["detail"]
 
 
 def test_config_has_defaults_and_constraints():
@@ -70,7 +102,12 @@ def test_episode_json_twap_fills_completely():
     assert ep["filled_fraction"] == pytest.approx(1.0, abs=1e-6)
 
 
-def test_episode_json_bad_ticker_400():
+def test_episode_json_bad_ticker_400(monkeypatch):
+    def _fail(ticker):
+        raise ValueError(f"No market data found for {ticker!r}")
+
+    monkeypatch.setattr("execution_env.server.ensure_daily_data", _fail)
+
     r = client.get("/api/episode?policy=twap&ticker=BOGUS")
     assert r.status_code == 400
 
@@ -103,7 +140,15 @@ def test_stream_emits_meta_slices_then_done():
     assert len(done["exec_prices"]) == n_slices
 
 
-def test_stream_bad_ticker_emits_error_event():
+def test_stream_bad_ticker_emits_error_event(monkeypatch):
+    # ticker is now resolved dynamically (ensure_daily_data), which would otherwise hit
+    # real Alpaca/yfinance for an unknown symbol -- patch it so this stays offline and
+    # deterministic, same as the "no keys, no network" promise for this test file.
+    def _fail(ticker):
+        raise ValueError(f"No market data found for {ticker!r}")
+
+    monkeypatch.setattr("execution_env.server.ensure_daily_data", _fail)
+
     r = client.get("/api/episode/stream?policy=twap&ticker=BOGUS")
     # SSE always returns 200; the failure is delivered as an `error` event.
     assert r.status_code == 200
@@ -111,7 +156,7 @@ def test_stream_bad_ticker_emits_error_event():
     assert len(events) == 1
     name, data = events[0]
     assert name == "error"
-    assert "ticker" in data["detail"]
+    assert "BOGUS" in data["detail"]
 
 
 def test_stream_json_consistency():

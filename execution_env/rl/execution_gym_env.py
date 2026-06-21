@@ -21,16 +21,20 @@ import pandas as pd
 
 from execution_env.simulator.benchmark import _MAX_SLIPPAGE_BPS, compute_vwap, execution_vwap, slippage_reward
 from execution_env.simulator.market_sim import (
+    DEFAULT_TICKERS,
     ImpactModel,
+    ensure_daily_data,
     intraday_path_and_volume,
-    load_daily_data,
     load_minute_data,
 )
 
-_TICKERS = ["TSLA", "NVDA", "AAPL", "SPY"]
+# Back-compat alias -- this used to be the only tickers ExecutionEnv could sample from;
+# it's now just the default when no explicit `tickers` list is passed (see __init__).
+_TICKERS = DEFAULT_TICKERS
 _N_SLICES = 26  # e.g. 15-min slices across a 6.5h trading day
 _TOTAL_SHARES = 10_000
 _MIN_SHARES = 1_000
+_OBS_DIM = 7  # see _build_obs() -- bump alongside the observation_space Box below
 
 
 class ExecutionEnv(gym.Env):
@@ -51,8 +55,11 @@ class ExecutionEnv(gym.Env):
         random, so the holdout set is genuinely unseen future data, not just a random
         subsample of the same period.
 
-        tickers restricts which tickers reset() can sample from (defaults to all of
-        _TICKERS) -- e.g. so a caller can pin an episode to a single requested ticker.
+        tickers restricts which tickers reset() can sample from (defaults to
+        DEFAULT_TICKERS) -- e.g. so a caller can pin an episode to a single requested
+        ticker. Any symbol works, not just the curated default set: daily/minute data is
+        fetched and cached on demand for whatever tickers are passed here (see
+        ensure_daily_data / load_minute_data in market_sim.py).
 
         order_adv_pct_range, if set, makes reset() size the parent order as a random
         fraction of the day's ADV drawn from this range (e.g. (0.05, 0.25)) instead of a
@@ -68,13 +75,21 @@ class ExecutionEnv(gym.Env):
         self._tickers = tickers or _TICKERS
         self._order_adv_pct_range = order_adv_pct_range
         self._adv = 0.0
-        self._data = load_daily_data()
+        # Fetches + caches daily/minute data for any requested ticker on demand, not just
+        # the curated DEFAULT_TICKERS -- raises ValueError up front (fail fast) if a
+        # symbol can't be resolved by any provider.
+        self._data = {ticker: ensure_daily_data(ticker) for ticker in self._tickers}
         self._minute_data = {ticker: load_minute_data(ticker) for ticker in self._tickers}
 
         self.action_space = spaces.Box(low=0.0, high=2.0, shape=(1,), dtype=np.float32)
+        # 7 dims: the original 5 (shares/time/return/volume-curve/slippage) plus 2
+        # liquidity/volatility-regime features (log_adv_norm, vol_regime_norm) so the
+        # policy can condition its behavior on how thin/thick and how volatile *this*
+        # ticker/day is, instead of only ever having seen a handful of similar large-cap
+        # names. See _build_obs() below.
         self.observation_space = spaces.Box(
-            low=np.array([0.0, 0.0, -1.0, 0.0, -1.0], dtype=np.float32),
-            high=np.array([1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32),
+            low=np.array([0.0, 0.0, -1.0, 0.0, -1.0, 0.0, 0.0], dtype=np.float32),
+            high=np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32),
             dtype=np.float32,
         )
 
@@ -86,6 +101,7 @@ class ExecutionEnv(gym.Env):
         self._exec_prices: list[float] = []
         self._exec_quantities: list[float] = []
         self._permanent_offset = 0.0
+        self._sigma_day = 0.0
 
     def _build_obs(self) -> np.ndarray:
         time_remaining_frac = 1.0 - self._slice_idx / self._n_slices
@@ -106,6 +122,14 @@ class ExecutionEnv(gym.Env):
                 raw_bps *= -1
             interim_slippage_norm = float(np.clip(raw_bps, -_MAX_SLIPPAGE_BPS, _MAX_SLIPPAGE_BPS) / _MAX_SLIPPAGE_BPS)
 
+        # Liquidity/volatility regime, so the policy can condition on *this* ticker/day
+        # instead of assuming it looks like the handful of large-cap names it trained on.
+        # log_adv_norm: ADV from 10K to ~1B shares/day mapped onto [0, 1].
+        log_adv_norm = float(np.clip((np.log10(max(self._adv, 1.0)) - 4.0) / 5.0, 0.0, 1.0))
+        # vol_regime_norm: daily Parkinson vol (see reset()) normalized against a 5% ceiling
+        # -- a liquid large-cap on a calm day is near 0; a small/volatile name near 1.
+        vol_regime_norm = float(np.clip(self._sigma_day / 0.05, 0.0, 1.0))
+
         return np.array(
             [
                 shares_remaining_frac,
@@ -113,6 +137,8 @@ class ExecutionEnv(gym.Env):
                 np.clip(recent_return, -1, 1),
                 volume_curve_position,
                 interim_slippage_norm,
+                log_adv_norm,
+                vol_regime_norm,
             ],
             dtype=np.float32,
         )
@@ -152,6 +178,13 @@ class ExecutionEnv(gym.Env):
         adv = float(day_row["Volume"])
         self._adv = adv
         self._impact = ImpactModel(adv=adv)
+
+        # Parkinson estimator from the day's real (High, Low) -- same formula
+        # market_sim.generate_intraday_path uses to calibrate the synthetic path's
+        # volatility, computed here directly from day_row so it's available for real-data
+        # days too (see _build_obs()'s vol_regime_norm feature).
+        high, low = float(day_row["High"]), float(day_row["Low"])
+        self._sigma_day = float(np.sqrt(np.log(high / low) ** 2 / (4 * np.log(2)))) if low > 0 else 0.0
 
         # When configured, size the order as a fraction of ADV so the agent trains across
         # the order-size regimes where participation-driven impact dominates.
