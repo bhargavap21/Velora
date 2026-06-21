@@ -68,22 +68,25 @@ _PROMPT = (
 )
 
 
-# Qwen3 8B (Tinker) is a thinking model: a real collect_group() run showed it burning its
-# entire completion budget on manual longhand arithmetic inside a <think> block (e.g.
-# hand-summing the 26-entry volume curve) and getting truncated before ever calling
-# submit_schedule -- 8/8 rollouts scored at the reward floor for this reason, not refusal.
+# Qwen3 8B (Tinker) is a thinking model that burns a large completion budget reasoning
+# through the volume curve before acting. Two distinct, independently-confirmed failure
+# modes were traced via a tool-call-argument-logging debug harness (3 sequential rollouts,
+# same pinned ROKU scenario):
+#   1. Token-budget truncation mid-reasoning: the model reasons *correctly* (one run
+#      derived "multiplier = 1.0 for every slice", which is right since the volume curve
+#      already sums to 1.0) but runs out of tokens before emitting submit_schedule ->
+#      reward floor. This is what max_tokens addresses; bumped 4096 -> 8192 to give the
+#      reasoning room to finish and still call the tool.
+#   2. Literal volume-curve echo: the model submits the raw volume_curve array verbatim
+#      (down to the exact float 0.14905090274683408) as the schedule, despite an explicit
+#      prompt warning against it -- reproduced bit-for-bit across independent rollouts, so
+#      it's the model's deterministic default, not sampling noise. Two prompt rewrites did
+#      NOT fix it; this is a reasoning-depth limitation of the 8B model and is exactly the
+#      structured failure RFT training is meant to correct, not a prompting problem.
 # enable_thinking=False is the standard vLLM/SGLang chat_template_kwargs toggle for Qwen3's
-# thinking mode; unconfirmed whether Tinker's serving backend honors it (it's a passthrough
-# extra_body field, not a HUD-specific guarantee). max_tokens is a safety net regardless.
-#
-# Re-tested with this fix: 5/8 rollouts submitted a valid schedule and scored near
-# VWAP-match (reward~0.348); 1/8 still hit the exact same truncation pattern (so this is
-# NOT a 100% fix, just a substantial improvement over 0/8); 2/8 scored at the reward floor
-# despite the model's own narration claiming a successful submission -- a separate,
-# not-yet-root-caused failure mode (likely a malformed/rejected schedule the model didn't
-# notice), distinct from truncation.
+# thinking mode (passthrough extra_body, not a HUD-specific guarantee).
 _COMPLETION_KWARGS = {
-    "max_tokens": 4096,
+    "max_tokens": 8192,
     "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
 }
 
