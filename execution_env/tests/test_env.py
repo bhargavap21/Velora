@@ -89,6 +89,19 @@ def test_submit_schedule_warns_on_length_mismatch():
     assert "warning" in result
 
 
+def test_submit_schedule_rejects_share_count_scale_values():
+    """Regression test for issue #15: a model that submits raw share counts (e.g.
+    [28760.0, ..., 104400.0], the actual per-slice share quantities) instead of
+    participation multipliers in [0, 2] must be rejected loudly, not silently clipped
+    and graded against a schedule it never intended."""
+    _run(_drain_one(env_mod._run_execution_template("p", ticker="AAPL", side="buy", total_shares=10_000, seed=1)))
+    result = _run(env_mod.submit_schedule(json.dumps({"schedule": [28760.0, 20270.0] + [1.0] * 24})))
+    assert result["accepted"] is False
+    assert "share" in result["reason"].lower()
+    # The bad submission must not have overwritten any prior state used for grading.
+    assert env_mod._SCHEDULE is None
+
+
 def test_no_submission_scores_at_floor_not_midpoint():
     """Regression test: a model that never calls submit_schedule() must score at the
     reward floor (0.0 normalized), not 0.5 (which used to mean "as good as VWAP")."""

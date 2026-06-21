@@ -58,14 +58,18 @@ necessary.
 1. Call read_market_context() to see the open price and intraday volume curve.
 2. Call submit_schedule() with a JSON string containing your plan.
 
-Each schedule entry is a participation multiplier in [0, 2] for that slice — 1.0 means
-"trade at exactly the VWAP-implied rate," below 1.0 trades less, above 1.0 trades more.
+Each schedule entry is a participation multiplier in [0, 2] for that slice — NOT a share
+count. 1.0 means "trade at exactly the VWAP-implied rate" (i.e. exactly volume_curve[i] *
+total_shares shares that slice), below 1.0 trades less than that, above 1.0 trades more.
+Every entry must be in [0, 2]; submitting raw share counts (e.g. tens of thousands) will be
+rejected. Example for a 4-slice order: [1.0, 1.0, 1.0, 1.0] trades exactly at the VWAP rate
+every slice; [1.5, 1.5, 0.5, 0.5] front-loads the order while still filling completely.
 The order must be fully filled by the end.
 
 You will be scored on slippage vs. VWAP (lower slippage is better) plus a penalty for
 any unfilled inventory.
 
-submit_schedule JSON shape:
+submit_schedule JSON shape (each m is a multiplier in [0, 2], not a share count):
 {{"schedule": [m0, m1, ..., m{n_slices - 1}], "reasoning": "..."}}"""
 
 
@@ -172,7 +176,10 @@ async def read_market_context() -> dict[str, Any]:
 
 @env.tool
 async def submit_schedule(schedule_json: str) -> dict[str, Any]:
-    """Submit an execution schedule as JSON: {"schedule": [float, ...], "reasoning": "..."}."""
+    """Submit an execution schedule as JSON: {"schedule": [float, ...], "reasoning": "..."}.
+    Each schedule entry is a participation multiplier in [0, 2] -- NOT a share count. 1.0
+    means trade at exactly the VWAP-implied rate for that slice; values outside [0, 2] will
+    be rejected."""
     global _SCHEDULE
     try:
         # Tolerant of prose/code-fences around the JSON object (same parser
@@ -191,10 +198,32 @@ async def submit_schedule(schedule_json: str) -> dict[str, Any]:
         return {"accepted": False, "reason": "Missing non-empty 'schedule' list."}
 
     try:
-        _SCHEDULE = [float(x) for x in schedule]
+        candidate = [float(x) for x in schedule]
     except (TypeError, ValueError):
         return {"accepted": False, "reason": "Schedule values must be numbers."}
 
+    # _grade_submitted_schedule clips each value into [0, 2] before stepping the env, so a
+    # share-count-scale submission (e.g. [28760.0, ..., 104400.0], the actual per-slice share
+    # counts -- a real failure mode an RFT'd model hit) would otherwise be silently accepted,
+    # clipped to 2.0 everywhere, and graded against a schedule the model never intended --
+    # "claims success in its own reasoning, scores at the reward floor or some arbitrary
+    # other value" with no signal of *why*. Reject loudly instead, with a large-but-finite
+    # margin above the documented [0, 2] range (2.0 itself is valid; this only catches values
+    # an order of magnitude off, like share counts).
+    _MAX_REASONABLE_MULTIPLIER = 5.0
+    out_of_range = [x for x in candidate if x < 0 or x > _MAX_REASONABLE_MULTIPLIER]
+    if out_of_range:
+        return {
+            "accepted": False,
+            "reason": (
+                "Schedule values must be participation multipliers in [0, 2] (1.0 = trade at "
+                "exactly the VWAP-implied rate), not share counts. Got out-of-range value(s) "
+                f"{out_of_range[:3]}, which look like raw share quantities. Resubmit with each "
+                "entry scaled to [0, 2]."
+            ),
+        }
+
+    _SCHEDULE = candidate
     response: dict[str, Any] = {
         "accepted": True,
         "n_slices": len(_SCHEDULE),
