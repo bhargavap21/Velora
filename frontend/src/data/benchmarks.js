@@ -101,6 +101,36 @@ export const ppoHoldout = {
   meanNotionalUsd: 1_171_370_488,
 }
 
+// RFT (issue #15, Phase 4) held-out result -- a forked, trainable Qwen3 8B (Tinker) GRPO-
+// trained for 15 groups (group_size=8) via HUD's TrainingClient, best checkpoint (step-000007,
+// in-training mean_reward=0.241) promoted as the active head via set_head(). Compared against
+// the pristine un-forked base model (Qwen/Qwen3-8B) on n=12 fresh held-out scenarios (distinct
+// seed pool from training), paired by seed so both models see the identical market path.
+//
+// Measured 2026-06-21. Deliberately small/honest: this is NOT a "RFT beats base model" claim --
+// the delta is small and positive but the t-stat is far from significant at this n (contrast
+// ppoPooled's t=18.5 at n=480). What's real here: the full collect -> train -> promote-checkpoint
+// -> held-out-eval pipeline now runs end-to-end (a real blocking bug -- a missing
+// `return_token_ids` flag -- was found and fixed to get here). Reaching a defensible "beats
+// zero-shot" claim needs more training steps and a larger held-out n; this is the in-progress
+// number, not the final one. See GitHub issue #15 and the /pitch deck (Slide 10) for the
+// reward curve and full writeup.
+export const rftHoldout = {
+  baseline: 'zero-shot Qwen3 8B',
+  model: 'velora-execution-rft-qwen3-8b (step-000007)',
+  nEpisodes: 12,
+  baseMeanReward: 0.156,
+  rftMeanReward: 0.179,
+  meanDelta: 0.023,
+  wins: 4,
+  ties: 5,
+  losses: 3,
+  tStat: 0.28,
+  isSignificant: false,
+  trainingGroups: 15,
+  trainingStepsApplied: 14,
+}
+
 // Headline stat band shown on the landing page.
 export const headlineStats = [
   { label: 'HUD tasks beating VWAP', value: '2 / 3', sub: 'PPO + Claude agents' },

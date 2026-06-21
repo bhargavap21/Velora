@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import AnimatedNumber from '../components/AnimatedNumber'
 import { policyMeta, formatUsd, formatBps, slippageBpsUpTo, usdFromBps } from '@/lib/execution'
-import { hudEval, ppoHoldout, headlineStats } from '@/data/benchmarks'
+import { hudEval, ppoHoldout, rftHoldout, headlineStats } from '@/data/benchmarks'
 import { apiUrl } from '@/lib/api'
 
 // A pinned, reproducible example scenario for the landing headline. The primary baseline
@@ -320,6 +320,26 @@ export default function Home() {
               Reproduce it live →
             </button>
           </div>
+        </div>
+
+        {/* RFT research status — deliberately quiet, not a headline claim (issue #15, Phase 4) */}
+        <div className="mt-4 flex flex-col items-start justify-between gap-3 rounded-[10px] border border-[#2e3038] bg-[#1c1d22] px-6 py-4 sm:flex-row sm:items-center">
+          <div>
+            <p className="text-[10px] font-medium uppercase tracking-[0.07em] text-[#464853]">RFT research · in progress</p>
+            <p className="mt-1.5 text-[13px] font-light leading-[1.6] text-[#777a88]">
+              Fine-tuning a Qwen3 8B model via HUD's training API on this same environment. Held-out result so far:{' '}
+              <span className="text-[#acafb9]">+{rftHoldout.meanDelta.toFixed(3)} mean reward</span> vs. zero-shot
+              (n={rftHoldout.nEpisodes}, t={rftHoldout.tStat.toFixed(2)}) — a small lean, not yet statistically
+              significant. We're not claiming a win; the pipeline runs end-to-end and the next iteration needs more
+              training and a larger eval.
+            </p>
+          </div>
+          <button
+            onClick={() => navigate('/pitch')}
+            className="shrink-0 whitespace-nowrap text-[12px] font-medium text-[#cc9166] transition-opacity hover:opacity-75"
+          >
+            See the full writeup →
+          </button>
         </div>
       </section>
 

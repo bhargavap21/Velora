@@ -130,7 +130,7 @@ function Slide1() {
         "Prove it on held-out market data. Reproduce it live."
       </p>
       <div className="mt-10 flex gap-3">
-        <Pill>Team Velora</Pill>
+        <Pill>Team Velora · Bhargava Perumalla, Dheeraj Tallapragada</Pill>
         <Pill>HUD × Modal × Fireworks</Pill>
       </div>
 
@@ -261,9 +261,6 @@ function Slide4() {
         Critical honesty line — judges respect this: edge is order-size dependent. It shows at institutional sizes
         (~8% ADV). At 10k-share HUD tasks, impact is tiny and scheduling barely matters.
       </Callout>
-      <p className="mt-3 text-[11px] font-light" style={{ color: FAINT }}>
-        Do NOT say: "PPO always wins" or quote a bps edge without naming the baseline (VWAP-match, not naive TWAP).
-      </p>
     </div>
   )
 }
@@ -395,8 +392,9 @@ function Slide8() {
         ]}
       />
       <Callout>
-        Same environment for eval and training — HUD's two-yield scenario pattern. PPO trained on Modal in hours; RFT
-        is live right now on a forked Tinker-hosted Qwen3 8B model via HUD's TrainingClient.
+        Same environment for eval and training — HUD's two-yield scenario pattern. PPO trained on Modal in hours; we
+        trained and evaluated an RFT checkpoint end-to-end tonight on a forked Tinker-hosted Qwen3 8B model via HUD's
+        TrainingClient — see the held-out result on the next slide.
       </Callout>
     </div>
   )
@@ -449,33 +447,36 @@ function Slide10() {
   return (
     <div className="flex h-full flex-col justify-center">
       <Kicker>What's Next — RFT</Kicker>
-      <Title>Phase 1 done. RFT training in progress right now (GitHub #15).</Title>
+      <Title>Phases 1-4 complete. The signal isn't significant yet (GitHub #15).</Title>
 
-      <div className="mt-6 grid grid-cols-[1.05fr_1fr] gap-4">
+      <div className="mt-5 grid grid-cols-[1.05fr_1fr] gap-4">
         <div className="space-y-2">
           {[
             { done: true, t: 'Environment + verifiable reward, hardened for trainable signal' },
             { done: true, t: 'PPO proves learnable alpha exists (+30.9 bps, t=18.5)' },
-            { done: true, t: 'HUD eval traces captured (PPO + Claude, real hud.ai job links)' },
             { done: true, t: 'Forked trainable Qwen3 8B (Tinker); TrainingClient.step() verified end-to-end, real checkpoints landing' },
-            { done: true, t: '15-group training run complete — 14 steps applied, reward curve logged' },
-            { done: false, t: 'Held-out base-vs-RFT comparison — numbers to be filled in once eval runs' },
+            { done: true, t: '15-group training run complete — best checkpoint (step-000007) promoted to active head' },
+            { done: true, t: 'Held-out comparison run: base (zero-shot) vs RFT, n=12, paired by seed' },
           ].map((s) => (
             <div key={s.t} className="flex items-start gap-3 rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-3.5 py-2.5">
-              <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: s.done ? '#7ec98f' : FAINT }} />
-              <p className="flex-1 text-[12px] font-light leading-snug" style={{ color: s.done ? '#d8d9de' : DIM }}>{s.t}</p>
-              <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.06em]" style={{ color: s.done ? '#7ec98f' : FAINT }}>
-                {s.done ? 'Done' : 'Pending'}
-              </span>
+              <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: '#7ec98f' }} />
+              <p className="flex-1 text-[12px] font-light leading-snug" style={{ color: '#d8d9de' }}>{s.t}</p>
+              <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.06em]" style={{ color: '#7ec98f' }}>Done</span>
             </div>
           ))}
+
+          <div className="mt-1 grid grid-cols-3 gap-2">
+            <Stat label="Mean delta" value="+0.023" sub="rft − base, n=12" />
+            <Stat label="Win/tie/loss" value="4/5/3" sub="held-out, paired" />
+            <Stat label="t-statistic" value="0.28" sub="not significant" />
+          </div>
         </div>
 
         <div className="rounded-[10px] border border-white/[0.06] bg-white/[0.02] p-3">
           <p className="text-[10px] font-medium uppercase tracking-[0.07em]" style={{ color: FAINT }}>
             Mean reward per training group (live run, n=15)
           </p>
-          <ResponsiveContainer width="100%" height={190}>
+          <ResponsiveContainer width="100%" height={150}>
             <LineChart data={RFT_CURVE} margin={{ top: 14, right: 8, bottom: 0, left: -16 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
               <XAxis dataKey="g" stroke={FAINT} tick={{ fontSize: 10, fill: DIM }} label={{ value: 'group', position: 'insideBottom', offset: -2, fontSize: 10, fill: FAINT }} />
@@ -489,15 +490,17 @@ function Slide10() {
             </LineChart>
           </ResponsiveContainer>
           <p className="mt-1 text-[10px] font-light" style={{ color: FAINT }}>
-            No clean upward trend yet — flat within noise over 14 gradient steps. Expected this early; not a verdict.
+            No clean upward trend over 14 gradient steps — consistent with the held-out result on the left.
           </p>
         </div>
       </div>
 
       <Callout>
-        Honest framing for judges: RFT trained live as we present — not "scoped," not claiming a win. The chart shows
-        real per-group reward, including the flat/noisy parts. The actual verdict is the held-out base-vs-RFT
-        comparison, still pending.
+        Honest framing for judges: RFT ran live end-to-end tonight — collect, train, promote, evaluate, all real. The
+        held-out delta is small and positive (+0.023) but the t-stat (0.28) is nowhere near significant at n=12. We
+        are not claiming a win over zero-shot. What's proven: the training pipeline itself works, including a real
+        bug we found and fixed (a missing token-id flag silently blocked every training call). Reaching significance
+        needs more training steps and a larger held-out n — exactly the next iteration, not a different approach.
       </Callout>
     </div>
   )
@@ -557,7 +560,7 @@ const SLIDES = [
   { Comp: Slide7, notes: 'Put the PM prompt on screen verbatim. Latency is not the blocker — say so if asked.' },
   { Comp: Slide8, notes: 'Judges love seeing the sponsor stack used for real, not just name-dropped.' },
   { Comp: Slide9, notes: 'Walk top to bottom once, slowly. Mention the chronological holdout split.' },
-  { Comp: Slide10, notes: 'RFT is live training right now — say that plainly, then commit to updating numbers post-eval.' },
+  { Comp: Slide10, notes: 'RFT trained and was evaluated tonight, end to end. Present the null result plainly — small positive lean, not significant — and frame the win as the validated pipeline + the bug we found and fixed.' },
   { Comp: Slide11, notes: 'The Most Utopian pitch. Slow down here.' },
   { Comp: Slide12, notes: 'End on the ask, not a recap.' },
 ]
