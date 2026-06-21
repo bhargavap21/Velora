@@ -68,6 +68,26 @@ _PROMPT = (
 )
 
 
+# Qwen3 8B (Tinker) is a thinking model: a real collect_group() run showed it burning its
+# entire completion budget on manual longhand arithmetic inside a <think> block (e.g.
+# hand-summing the 26-entry volume curve) and getting truncated before ever calling
+# submit_schedule -- 8/8 rollouts scored at the reward floor for this reason, not refusal.
+# enable_thinking=False is the standard vLLM/SGLang chat_template_kwargs toggle for Qwen3's
+# thinking mode; unconfirmed whether Tinker's serving backend honors it (it's a passthrough
+# extra_body field, not a HUD-specific guarantee). max_tokens is a safety net regardless.
+#
+# Re-tested with this fix: 5/8 rollouts submitted a valid schedule and scored near
+# VWAP-match (reward~0.348); 1/8 still hit the exact same truncation pattern (so this is
+# NOT a 100% fix, just a substantial improvement over 0/8); 2/8 scored at the reward floor
+# despite the model's own narration claiming a successful submission -- a separate,
+# not-yet-root-caused failure mode (likely a malformed/rejected schedule the model didn't
+# notice), distinct from truncation.
+_COMPLETION_KWARGS = {
+    "max_tokens": 4096,
+    "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+}
+
+
 async def collect_group(scenario: dict[str, Any], model: str, group_size: int = GROUP_SIZE) -> list[Any]:
     """group_size rollouts of the SAME pinned scenario (via execution_fixed), using
     HUD's built-in agent for `model`. Returns the Run list -- exactly what
@@ -90,7 +110,7 @@ async def collect_group(scenario: dict[str, Any], model: str, group_size: int = 
         total_shares=scenario["total_shares"],
         seed=scenario["seed"],
     )
-    agent = hud_agents.create_agent(model)
+    agent = hud_agents.create_agent(model, completion_kwargs=_COMPLETION_KWARGS)
     runtime = LocalRuntime(_ENV_PY)
     group_id = str(uuid.uuid4())
 
