@@ -26,6 +26,7 @@ from execution_env.simulator.market_sim import (
     ensure_daily_data,
     intraday_path_and_volume,
     load_minute_data,
+    u_shaped_volume_curve,
 )
 
 # Back-compat alias -- this used to be the only tickers ExecutionEnv could sample from;
@@ -34,7 +35,7 @@ _TICKERS = DEFAULT_TICKERS
 _N_SLICES = 26  # e.g. 15-min slices across a 6.5h trading day
 _TOTAL_SHARES = 10_000
 _MIN_SHARES = 1_000
-_OBS_DIM = 7  # see _build_obs() -- bump alongside the observation_space Box below
+_OBS_DIM = 8  # see _build_obs() -- bump alongside the observation_space Box below
 
 
 class ExecutionEnv(gym.Env):
@@ -82,19 +83,22 @@ class ExecutionEnv(gym.Env):
         self._minute_data = {ticker: load_minute_data(ticker) for ticker in self._tickers}
 
         self.action_space = spaces.Box(low=0.0, high=2.0, shape=(1,), dtype=np.float32)
-        # 7 dims: the original 5 (shares/time/return/volume-curve/slippage) plus 2
+        # 8 dims: the original 5 (shares/time/return/volume-curve/slippage) plus 2
         # liquidity/volatility-regime features (log_adv_norm, vol_regime_norm) so the
         # policy can condition its behavior on how thin/thick and how volatile *this*
         # ticker/day is, instead of only ever having seen a handful of similar large-cap
-        # names. See _build_obs() below.
+        # names, plus a real-time volume-surprise feature (volume_surprise) comparing
+        # volume realized so far against the a-priori expected curve. See _build_obs()
+        # below.
         self.observation_space = spaces.Box(
-            low=np.array([0.0, 0.0, -1.0, 0.0, -1.0, 0.0, 0.0], dtype=np.float32),
-            high=np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32),
+            low=np.array([0.0, 0.0, -1.0, 0.0, -1.0, 0.0, 0.0, -1.0], dtype=np.float32),
+            high=np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32),
             dtype=np.float32,
         )
 
         self._path: np.ndarray = np.array([])
         self._volume_curve: np.ndarray = np.array([])
+        self._expected_volume_curve: np.ndarray = np.array([])
         self._impact: ImpactModel | None = None
         self._slice_idx = 0
         self._shares_remaining = 0.0
@@ -130,6 +134,17 @@ class ExecutionEnv(gym.Env):
         # -- a liquid large-cap on a calm day is near 0; a small/volatile name near 1.
         vol_regime_norm = float(np.clip(self._sigma_day / 0.05, 0.0, 1.0))
 
+        # volume_surprise: realized volume so far (slices 0..slice_idx-1 only -- no
+        # look-ahead into the future of this realized curve) vs. the a-priori expected
+        # U-shaped curve fixed at reset(). >0 means today is trading heavier than
+        # expected at this point in the session; <0 means lighter.
+        volume_surprise = 0.0
+        if self._slice_idx > 0:
+            realized_so_far = float(self._volume_curve[: self._slice_idx].sum())
+            expected_so_far = float(self._expected_volume_curve[: self._slice_idx].sum())
+            ratio = realized_so_far / max(expected_so_far, 1e-6)
+            volume_surprise = float(np.clip(ratio - 1.0, -1.0, 1.0))
+
         return np.array(
             [
                 shares_remaining_frac,
@@ -139,6 +154,7 @@ class ExecutionEnv(gym.Env):
                 interim_slippage_norm,
                 log_adv_norm,
                 vol_regime_norm,
+                volume_surprise,
             ],
             dtype=np.float32,
         )
@@ -174,6 +190,10 @@ class ExecutionEnv(gym.Env):
         self._path, self._volume_curve, data_source = intraday_path_and_volume(
             ticker, day_ts, day_row, self._n_slices, rng, self._minute_data
         )
+        # Always the synthetic U-shape, regardless of data_source -- this is the fixed,
+        # day-agnostic prior an agent could legitimately hold before the session starts,
+        # used as the baseline for the volume_surprise observation feature.
+        self._expected_volume_curve = u_shaped_volume_curve(self._n_slices)
 
         adv = float(day_row["Volume"])
         self._adv = adv

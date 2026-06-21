@@ -25,11 +25,37 @@ import modal
 app = modal.App("velora-ppo-train")
 
 _REPO_ROOT = "/root/velora"
-_DATA_VOLUME_PATH = f"{_REPO_ROOT}/execution_env/data_cache"
+# Separate from execution_env/data_cache/ -- that path is baked into the image by
+# add_local_dir() below (it's the committed parquet cache), and Modal refuses to mount a
+# Volume on a non-empty path. market_sim._DATA_DIR is redirected here at the top of
+# train() instead, so priming/training read and write Volume-persisted data, not the
+# image's baked-in copy.
+_DATA_VOLUME_PATH = "/cache/data_cache"
+
+# Deliberately not the full requirements.txt: that file pins protobuf==7.35.1 for
+# unrelated tools (anthropic, hud-python, ...) which conflicts with modal's own
+# protobuf<7.0 requirement. Training only needs this handful of packages -- a smaller,
+# conflict-free, faster-to-build image.
+_TRAIN_DEPENDENCIES = [
+    "numpy==2.4.6",
+    "pandas==3.0.3",
+    "pyarrow",
+    "gymnasium",
+    "stable-baselines3",
+    "matplotlib==3.11.0",
+    "alpaca-py==0.43.4",
+    "yfinance==1.4.1",
+    "python-dotenv==1.2.2",
+]
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install_from_requirements("requirements.txt")
+    # Install CPU-only torch *before* stable-baselines3 -- otherwise pip resolves a full
+    # CUDA build (hundreds of MB of nvidia-* wheels) for a function that only requests
+    # CPU (cpu=16 below, no GPU). Installing it first means stable-baselines3 just finds
+    # torch already satisfied and skips pulling the GPU variant.
+    .pip_install("torch", extra_index_url="https://download.pytorch.org/whl/cpu")
+    .pip_install(*_TRAIN_DEPENDENCIES)
     .add_local_dir(".", remote_path=_REPO_ROOT)
 )
 
@@ -50,8 +76,17 @@ _MODAL_TOTAL_TIMESTEPS = 2_000_000
 )
 def train() -> dict[str, bytes]:
     import sys
+    from pathlib import Path
 
     sys.path.insert(0, _REPO_ROOT)
+
+    import execution_env.simulator.market_sim as market_sim
+
+    # Redirect the data cache to the Volume-mounted path (see _DATA_VOLUME_PATH above)
+    # instead of the image's baked-in execution_env/data_cache/ copy, so priming here
+    # persists across runs via the Volume.
+    market_sim._DATA_DIR = Path(_DATA_VOLUME_PATH)
+    market_sim._DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     from execution_env.rl.prime_data_cache import prime
     from execution_env.rl.train_ppo import (
