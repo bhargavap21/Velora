@@ -797,3 +797,115 @@ async def eval_stream(
         }
 
     return EventSourceResponse(event_stream())
+
+
+# ---------------------------------------------------------------------------
+# RFT live eval -- a real LLM (HUD-gateway, Tinker-hosted) graded per episode, not a
+# deterministic in-process policy like the ones above. Each episode is two live tool-
+# calling rollouts (base zero-shot model + the trained RFT checkpoint), so this is slow
+# (~10-30s per rollout, observed) and costs real inference -- capped tightly below.
+# ---------------------------------------------------------------------------
+
+_RFT_BASE_MODEL = "Qwen/Qwen3-8B"  # pristine, un-forked -- the zero-shot comparison point
+_RFT_BASE_SEED = 77_000  # distinct from /api/eval/stream's 10_000 and training's 20260621 pool
+
+
+@app.get("/api/rft/stream")
+async def rft_stream(
+    ticker: str = Query("AAPL"),
+    side: Literal["buy", "sell"] = Query("buy"),
+    adv_pct: float = Query(8.0, ge=1.0, le=20.0),
+    n_episodes: int = Query(8, ge=1, le=8),
+):
+    """Live, re-runnable version of the static RFT panel on the Proof page: streams one
+    `episode` event per (base, rft) paired rollout as each completes, then a `summary`
+    event with the aggregate stats -- same shape as /api/eval/stream, but each episode is
+    a real LLM call through HUD's gateway instead of an instant local policy step.
+    """
+    import json
+
+    import hud.agents as hud_agents
+    from hud.eval import LocalRuntime
+    from hud.eval import rollout as hud_rollout
+
+    from execution_env.env import execution_fixed
+    from execution_env.rl.hud_rft_pipeline import MODEL as _RFT_MODEL, _COMPLETION_KWARGS, _ENV_PY, _PROMPT
+
+    try:
+        ticker_df = ensure_daily_data(ticker)
+    except ValueError as exc:
+        async def ticker_err():
+            yield {"event": "error", "data": json.dumps({"detail": str(exc)})}
+        return EventSourceResponse(ticker_err())
+
+    ref_adv = float(ticker_df["Volume"].median())
+    shares = shares_from_adv_pct(adv_pct, ref_adv)
+    runtime = LocalRuntime(_ENV_PY)
+
+    async def run_one(model: str, seed: int) -> float:
+        task = execution_fixed(prompt=_PROMPT, ticker=ticker, side=side, total_shares=shares, seed=seed)
+        agent = hud_agents.create_agent(model, completion_kwargs=_COMPLETION_KWARGS)
+        run = await hud_rollout(task, agent, runtime=runtime)
+        return float(run.reward)
+
+    async def event_stream():
+        yield {
+            "event": "meta",
+            "data": json.dumps(
+                {
+                    "model": _RFT_MODEL,
+                    "baseline": "zero-shot " + _RFT_BASE_MODEL,
+                    "ticker": ticker,
+                    "side": side,
+                    "total_shares": shares,
+                    "adv_pct": adv_pct,
+                    "n_episodes": n_episodes,
+                }
+            ),
+        }
+
+        deltas: list[float] = []
+        for k in range(n_episodes):
+            seed = _RFT_BASE_SEED + k
+            try:
+                base_reward = await run_one(_RFT_BASE_MODEL, seed)
+                rft_reward = await run_one(_RFT_MODEL, seed)
+            except Exception as exc:
+                yield {"event": "episode", "data": json.dumps({"i": k, "error": str(exc)})}
+                continue
+
+            delta = rft_reward - base_reward
+            deltas.append(delta)
+            yield {
+                "event": "episode",
+                "data": json.dumps(
+                    {"i": k, "base_reward": round(base_reward, 4), "rft_reward": round(rft_reward, 4), "delta": round(delta, 4)}
+                ),
+            }
+            await asyncio.sleep(0)
+
+        if deltas:
+            arr = np.array(deltas)
+            wins = int((arr > 0).sum())
+            ties = int((arr == 0).sum())
+            losses = int((arr < 0).sum())
+            se = float(arr.std(ddof=1) / np.sqrt(len(arr))) if len(arr) > 1 else 0.0
+            t_stat = float(arr.mean() / se) if se > 0 else 0.0
+            yield {
+                "event": "summary",
+                "data": json.dumps(
+                    {
+                        "n": len(arr),
+                        "mean_delta": round(float(arr.mean()), 4),
+                        "wins": wins,
+                        "ties": ties,
+                        "losses": losses,
+                        "t_stat": round(t_stat, 3),
+                        "is_significant": bool(abs(t_stat) > 1.96),
+                    }
+                ),
+            }
+        else:
+            yield {"event": "summary", "data": json.dumps({"n": 0, "error": "all episodes failed"})}
+
+    return EventSourceResponse(event_stream())

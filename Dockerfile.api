@@ -5,6 +5,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# CPU-only torch wheel: stable-baselines3 pulls the default CUDA build otherwise,
+# which drags in the full nvidia-cublas/cudnn stack and blows past 1-2GB of RAM
+# on a container that never touches a GPU.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
 COPY requirements.api.txt .
 RUN pip install --no-cache-dir -r requirements.api.txt
 

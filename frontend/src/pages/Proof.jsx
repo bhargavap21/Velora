@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { policyMeta, formatUsd, formatBps, histogram } from '@/lib/execution'
 import { apiUrl } from '@/lib/api'
+import { rftHoldout } from '@/data/benchmarks'
 
 const inputClass =
   'h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
@@ -299,7 +300,77 @@ export default function Proof() {
             </CardContent>
           </Card>
         )}
+
+        <RftHoldoutCard />
       </div>
     </div>
+  )
+}
+
+// Static evidence panel for the in-progress RFT effort (GitHub issue #15) -- the actual n=12
+// paired result already collected, honestly, including the losses. A live, re-runnable version
+// exists at /rft (real LLM calls per episode, capped low); this snapshot stays here so the
+// Proof page isn't blocking on that slower, costlier path by default.
+function RftHoldoutCard() {
+  const rows = rftHoldout.scenarios.map((s, i) => ({ ...s, idx: i + 1, delta: s.rft - s.base }))
+  return (
+    <Card className="mt-4 border-dashed">
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-base">RFT held-out result (in progress)</CardTitle>
+            <CardDescription>
+              {rftHoldout.model} vs. zero-shot Qwen3 8B, n={rftHoldout.nEpisodes} fresh scenarios, paired by seed —
+              the actual data behind the snapshot below. Want a fresh run instead of this fixed one? See{' '}
+              <a href="/rft" className="font-medium underline">the live RFT page</a> — it makes real LLM calls per
+              episode (~30-90s each), capped low, so it's a separate page rather than a button here.
+            </CardDescription>
+          </div>
+          <Badge variant="outline" className="shrink-0">Not yet significant</Badge>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={rows} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+            <XAxis dataKey="ticker" stroke="var(--muted-foreground)" tick={{ fontSize: 11 }} />
+            <YAxis stroke="var(--muted-foreground)" tick={{ fontSize: 11 }}
+              label={{ value: 'reward delta (rft - base)', angle: -90, position: 'insideLeft', fontSize: 11, fill: 'var(--muted-foreground)' }} />
+            <Tooltip
+              contentStyle={{ backgroundColor: 'var(--popover)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }}
+              formatter={(v, _n, p) => [`${v >= 0 ? '+' : ''}${v.toFixed(3)}`, `${p.payload.side} · base=${p.payload.base.toFixed(2)} rft=${p.payload.rft.toFixed(2)}`]}
+            />
+            <ReferenceLine y={0} stroke="var(--muted-foreground)" strokeDasharray="4 3" />
+            <Bar dataKey="delta" radius={[3, 3, 0, 0]}>
+              {rows.map((r, i) => <Cell key={i} fill={r.delta > 0 ? WIN_COLOR : r.delta < 0 ? LOSS_COLOR : 'var(--muted-foreground)'} />)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+        <div className="mt-4 grid grid-cols-1 gap-4 border-t pt-4 md:grid-cols-4">
+          <div>
+            <p className="text-xs text-muted-foreground">Mean delta</p>
+            <p className="mt-0.5 text-lg font-bold tabular-nums" style={{ color: WIN_COLOR }}>+{rftHoldout.meanDelta.toFixed(3)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Win / tie / loss</p>
+            <p className="mt-0.5 text-lg font-bold tabular-nums">{rftHoldout.wins} / {rftHoldout.ties} / {rftHoldout.losses}</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">t-statistic</p>
+            <p className="mt-0.5 text-lg font-bold tabular-nums">{rftHoldout.tStat.toFixed(2)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Training</p>
+            <p className="mt-0.5 text-lg font-bold tabular-nums">{rftHoldout.trainingStepsApplied} steps</p>
+          </div>
+        </div>
+        <p className="mt-4 text-xs text-muted-foreground">
+          Honest read: small positive lean, far from statistically significant at this n. What's real is the
+          pipeline itself — collect, train, promote checkpoint, evaluate — now runs end to end. See{' '}
+          <a href="/pitch" className="font-medium underline">the full writeup</a> for the training curve and the bug
+          we found and fixed to get here.
+        </p>
+      </CardContent>
+    </Card>
   )
 }

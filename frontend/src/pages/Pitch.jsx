@@ -5,7 +5,7 @@ import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
   ResponsiveContainer, Cell,
 } from 'recharts'
-import { ppoPooled, ppoHoldout, hudEval, headlineStats } from '@/data/benchmarks'
+import { ppoPooled, ppoHoldout, rftHoldout } from '@/data/benchmarks'
 
 // ─── shared bits ──────────────────────────────────────────────────────────────
 
@@ -265,30 +265,6 @@ function Slide4() {
   )
 }
 
-function Slide5() {
-  return (
-    <div className="flex h-full flex-col justify-center">
-      <Kicker>Live Demo Storyboard</Kicker>
-      <Title>3-minute demo — pick one path</Title>
-      <div className="mt-6 grid grid-cols-3 gap-3">
-        {[
-          { t: 'A · Reproduce the proof', d: 'Proof page → AAPL, 8% ADV, 60 episodes, VWAP-match baseline. Click run, show win rate / mean bps / t-stat live.', q: '"Same seeds, same price path for every policy — no cherry-picking."', time: '~90s · safest' },
-          { t: 'B · Head-to-head', d: 'Showdown → TSLA buy, 8% ADV, seed 7. PPO vs VWAP-match slippage chart side-by-side. Point at the participation curve.', q: null, time: '~90s' },
-          { t: 'C · HUD agent eval', d: 'Home HUD card → PPO vs Claude scores. Click the hud.ai job links — verifiable traces, not fabricated.', q: `PPO ${hudEval.agents[0].meanScore} vs Claude ${hudEval.agents[1].meanScore} on 3 tasks`, time: '~60s' },
-        ].map((p) => (
-          <div key={p.t} className="rounded-[10px] border border-white/[0.06] bg-white/[0.02] p-4">
-            <p className="text-[10px] font-medium uppercase tracking-[0.06em]" style={{ color: GOLD }}>{p.time}</p>
-            <p className="mt-2 text-[14px] font-light text-white">{p.t}</p>
-            <p className="mt-2 text-[12px] font-light leading-relaxed" style={{ color: DIM }}>{p.d}</p>
-            {p.q && <p className="mt-2 text-[11px] font-light italic" style={{ color: '#e8c9a8' }}>{p.q}</p>}
-          </div>
-        ))}
-      </div>
-      <Callout tone="dim">Backup if demo fails: screenshot + job URLs + "run locally with one command."</Callout>
-    </div>
-  )
-}
-
 function Slide6() {
   return (
     <div className="flex h-full flex-col justify-center">
@@ -320,7 +296,7 @@ function Slide6() {
             <li>Natural-language constraints</li>
             <li>Generalizes to unseen tickers</li>
             <li>Explainable schedules</li>
-            <li>RFT path (Fireworks / HUD)</li>
+            <li>RFT'd via HUD — trained, evaluated, not yet significant (see next slides)</li>
           </ul>
         </div>
       </div>
@@ -386,7 +362,7 @@ function Slide8() {
       <Table
         cols={['Sponsor', 'How we use it']}
         rows={[
-          ['HUD', 'MCP environment, hud eval, agent traces, GRPO/RFT path (issue #15)'],
+          ['HUD', 'MCP environment, hud eval, agent traces, GRPO/RFT training (issue #15, run tonight)'],
           ['Modal', 'PPO training on 51 tickers, 2.03M timesteps, data cache Volume'],
           ['Fireworks', 'gpt-oss open-weight agent + RFT reward function path'],
         ]}
@@ -455,8 +431,8 @@ function Slide10() {
             { done: true, t: 'Environment + verifiable reward, hardened for trainable signal' },
             { done: true, t: 'PPO proves learnable alpha exists (+30.9 bps, t=18.5)' },
             { done: true, t: 'Forked trainable Qwen3 8B (Tinker); TrainingClient.step() verified end-to-end, real checkpoints landing' },
-            { done: true, t: '15-group training run complete — best checkpoint (step-000007) promoted to active head' },
-            { done: true, t: 'Held-out comparison run: base (zero-shot) vs RFT, n=12, paired by seed' },
+            { done: true, t: `${rftHoldout.trainingGroups}-group training run complete — best checkpoint promoted to active head` },
+            { done: true, t: `Held-out comparison run: base (zero-shot) vs RFT, n=${rftHoldout.nEpisodes}, paired by seed` },
           ].map((s) => (
             <div key={s.t} className="flex items-start gap-3 rounded-[10px] border border-white/[0.06] bg-white/[0.02] px-3.5 py-2.5">
               <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: '#7ec98f' }} />
@@ -466,9 +442,9 @@ function Slide10() {
           ))}
 
           <div className="mt-1 grid grid-cols-3 gap-2">
-            <Stat label="Mean delta" value="+0.023" sub="rft − base, n=12" />
-            <Stat label="Win/tie/loss" value="4/5/3" sub="held-out, paired" />
-            <Stat label="t-statistic" value="0.28" sub="not significant" />
+            <Stat label="Mean delta" value={`+${rftHoldout.meanDelta.toFixed(3)}`} sub={`rft − base, n=${rftHoldout.nEpisodes}`} />
+            <Stat label="Win/tie/loss" value={`${rftHoldout.wins}/${rftHoldout.ties}/${rftHoldout.losses}`} sub="held-out, paired" />
+            <Stat label="t-statistic" value={rftHoldout.tStat.toFixed(2)} sub={rftHoldout.isSignificant ? 'significant' : 'not significant'} />
           </div>
         </div>
 
@@ -494,14 +470,6 @@ function Slide10() {
           </p>
         </div>
       </div>
-
-      <Callout>
-        Honest framing for judges: RFT ran live end-to-end tonight — collect, train, promote, evaluate, all real. The
-        held-out delta is small and positive (+0.023) but the t-stat (0.28) is nowhere near significant at n=12. We
-        are not claiming a win over zero-shot. What's proven: the training pipeline itself works, including a real
-        bug we found and fixed (a missing token-id flag silently blocked every training call). Reaching significance
-        needs more training steps and a larger held-out n — exactly the next iteration, not a different approach.
-      </Callout>
     </div>
   )
 }
@@ -555,7 +523,6 @@ const SLIDES = [
   { Comp: Slide2, notes: 'Set up Originality: real finance problem, verifiable reward, agent interface.' },
   { Comp: Slide3, notes: 'This is the Completion slide — say "every number on Proof is reproducible one-click."' },
   { Comp: Slide4, notes: 'Say the honesty line about order-size dependence out loud. Never say "PPO always wins."' },
-  { Comp: Slide5, notes: 'Pick ONE path live — Path A is safest. Have the backup screenshot ready.' },
   { Comp: Slide6, notes: 'Lead with the sanity-eval insight — it is your most original finding.' },
   { Comp: Slide7, notes: 'Put the PM prompt on screen verbatim. Latency is not the blocker — say so if asked.' },
   { Comp: Slide8, notes: 'Judges love seeing the sponsor stack used for real, not just name-dropped.' },

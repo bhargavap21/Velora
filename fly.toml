@@ -21,6 +21,6 @@ primary_region = "sjc"
   destination = "/app/execution_env/data_cache"
 
 [[vm]]
-  memory = "2gb"
+  memory = "4gb"
   cpu_kind = "shared"
-  cpus = 1
+  cpus = 2

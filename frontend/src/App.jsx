@@ -5,6 +5,7 @@ import Proof from './pages/Proof'
 import ExecutionLive from './pages/ExecutionLive'
 import ExecutionSandbox from './pages/ExecutionSandbox'
 import Pitch from './pages/Pitch'
+import RftLive from './pages/RftLive'
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
         <Route path="/execution-demo" element={<ExecutionLive />} />
         <Route path="/sandbox" element={<ExecutionSandbox />} />
         <Route path="/pitch" element={<Pitch />} />
+        <Route path="/rft" element={<RftLive />} />
       </Routes>
     </BrowserRouter>
   )

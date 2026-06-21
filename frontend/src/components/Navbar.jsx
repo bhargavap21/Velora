@@ -6,6 +6,7 @@ const LINKS = [
   { to: '/proof', label: 'Proof' },
   { to: '/execution-demo', label: 'Live Demo' },
   { to: '/sandbox', label: 'Sandbox' },
+  { to: '/rft', label: 'RFT' },
 ]
 
 export default function Navbar() {

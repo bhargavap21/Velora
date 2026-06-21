@@ -129,6 +129,23 @@ export const rftHoldout = {
   isSignificant: false,
   trainingGroups: 15,
   trainingStepsApplied: 14,
+  // Per-scenario rewards from the actual run -- not a re-derivable replay (the LLM calls
+  // are gone), but the raw paired data behind the aggregate stats above, for an honest
+  // distribution view instead of just the summary numbers.
+  scenarios: [
+    { ticker: 'JPM', side: 'sell', base: 0.0000, rft: 0.3707 },
+    { ticker: 'PLTR', side: 'sell', base: 0.3962, rft: 0.3951 },
+    { ticker: 'ROKU', side: 'buy', base: 0.0000, rft: 0.4773 },
+    { ticker: 'CRWD', side: 'sell', base: 0.0000, rft: 0.3430 },
+    { ticker: 'XLE', side: 'sell', base: 0.4504, rft: 0.0000 },
+    { ticker: 'SPY', side: 'buy', base: 0.0000, rft: 0.0000 },
+    { ticker: 'ZS', side: 'buy', base: 0.0000, rft: 0.0000 },
+    { ticker: 'META', side: 'buy', base: 0.4736, rft: 0.0000 },
+    { ticker: 'AFRM', side: 'buy', base: 0.5520, rft: 0.5627 },
+    { ticker: 'IWM', side: 'sell', base: 0.0000, rft: 0.0000 },
+    { ticker: 'LCID', side: 'buy', base: 0.0000, rft: 0.0000 },
+    { ticker: 'AMZN', side: 'buy', base: 0.0000, rft: 0.0000 },
+  ],
 }
 
 // Headline stat band shown on the landing page.
