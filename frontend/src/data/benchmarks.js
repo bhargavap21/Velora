@@ -2,12 +2,18 @@
 //
 // These are real, reproducible measurements, not estimates:
 //   - hudEval: the HUD agent evaluation (`hud eval execution_env/tasks.py claude`),
-//     run on 2026-06-20 with claude-sonnet-4-6 through the HUD gateway.
+//     run on 2026-06-20 with claude-sonnet-4-6 through the HUD gateway. Reflects the
+//     pre-retrain (7-dim observation) PPO checkpoint -- not yet rerun against the new
+//     8-dim/51-ticker checkpoint below.
 //   - ppoPooled / ppoHoldout: the server's held-out evaluation over chronologically
 //     held-out days (the last 20% of each ticker's history) the PPO model never trained
 //     on, paired by seed so each policy sees the identical price path. Measured against
 //     the recalibrated, participation-saturated impact model (market_sim.py:_MAX_PARTICIPATION).
-//       ppoPooled  = pooled over all 4 tickers x {buy, sell}, 60 days each (n=480).
+//     Re-measured 2026-06-21 against the PPO checkpoint retrained on Modal (8-dim obs incl.
+//     volume_surprise, 2.03M timesteps, 51-ticker training universe) -- verified by directly
+//     replaying the eval loop locally against execution_env/results/ppo_execution.zip
+//     (not just trusting the Modal training log).
+//       ppoPooled  = pooled over the original 4 tickers x {buy, sell}, 60 days each (n=480).
 //       ppoHoldout = the single-ticker example reproducible one-click on the Proof page
 //                    (policy=ppo, baseline=twap/VWAP-match, ticker=AAPL, side=buy,
 //                     adv_pct=8, n_episodes=60).
@@ -17,10 +23,15 @@
 //     CAVEAT: this edge is order-size dependent. It holds at institutional sizes (adv_pct=8,
 //     i.e. orders sized as ~8% of average daily volume) where participation-driven impact
 //     dominates and intraday scheduling matters. At the small order size used in the HUD
-//     tasks above (10,000 shares), PPO is roughly a coin flip against VWAP-match (~47%
-//     win-rate, slightly negative mean edge) -- impact is too small at that size for
-//     scheduling skill to show up. Don't present the 83%/95% win-rates as if they applied
-//     to a 10k-share order; always pair them with the adv_pct they were measured at.
+//     tasks above (10,000 shares), PPO is roughly a coin flip against VWAP-match -- impact is
+//     too small at that size for scheduling skill to show up. Don't present the pooled/holdout
+//     win-rates as if they applied to a 10k-share order; always pair them with the adv_pct
+//     they were measured at.
+//
+//     The new checkpoint also generalizes to ~51 tickers beyond the original 4 (see
+//     execution_env/rl/train_ppo.py:TRAIN_TICKERS) -- those win-rates aren't re-measured here,
+//     since ppoPooled/ppoHoldout intentionally stay pinned to the original 4-ticker set this
+//     page has always reported.
 //
 // Reward is normalized so 0.50 == the VWAP/TWAP benchmark; > 0.50 beats it.
 
@@ -67,12 +78,12 @@ export const hudEval = {
 export const ppoPooled = {
   baseline: 'VWAP-match',
   nEpisodes: 480,
-  winRate: 0.829,
-  meanAdvantageBps: 25.3,
-  medianAdvantageBps: 27.1,
-  tStat: 16.74,
-  medianUsdSavedPerOrder: 4_929_352,
-  meanNotionalUsd: 2_271_692_737,
+  winRate: 0.825,
+  meanAdvantageBps: 30.89,
+  medianAdvantageBps: 33.36,
+  tStat: 18.51,
+  medianUsdSavedPerOrder: 5_408_990,
+  meanNotionalUsd: 2_270_055_855,
 }
 
 // Single-ticker example, reproducible one-click on the Proof page (its default scenario).
@@ -83,10 +94,10 @@ export const ppoHoldout = {
   advPct: 8,
   nEpisodes: 60,
   winRate: 0.95,
-  meanAdvantageBps: 31.1,
-  medianAdvantageBps: 34.5,
-  tStat: 10.24,
-  usdSavedPerOrder: 3_642_279,
+  meanAdvantageBps: 36.24,
+  medianAdvantageBps: 37.2,
+  tStat: 10.4,
+  usdSavedPerOrder: 4_245_398,
   meanNotionalUsd: 1_171_370_488,
 }
 
