@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import Navbar from '../components/Navbar'
 import ExecutionChart, { currentSlippageBps } from '../components/ExecutionChart'
 import { Progress } from '@/components/ui/progress'
+import { apiUrl } from '@/lib/api'
 
 const POLICY_LABELS = {
   naive_twap: 'TWAP (equal-time)',
@@ -40,7 +41,7 @@ export default function ExecutionLive() {
   const esRef = useRef(null)
 
   useEffect(() => {
-    fetch('/api/policies')
+    fetch(apiUrl('/api/policies'))
       .then(res => {
         if (!res.ok) throw new Error('Failed to load policies')
         return res.json()
@@ -66,7 +67,7 @@ export default function ExecutionLive() {
     setSlice(0)
     setDone(false)
 
-    const es = new EventSource(`/api/episode/stream?policy=${selectedPolicy}`)
+    const es = new EventSource(apiUrl(`/api/episode/stream?policy=${selectedPolicy}`))
     esRef.current = es
 
     es.addEventListener('meta', (e) => {

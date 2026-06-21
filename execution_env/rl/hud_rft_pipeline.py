@@ -85,9 +85,17 @@ _PROMPT = (
 #      structured failure RFT training is meant to correct, not a prompting problem.
 # enable_thinking=False is the standard vLLM/SGLang chat_template_kwargs toggle for Qwen3's
 # thinking mode (passthrough extra_body, not a HUD-specific guarantee).
+#
+# return_token_ids=True is REQUIRED for TrainingClient.step() to work at all -- without it
+# the gateway never attaches token ids/logprobs to the response, so no AgentStep.sample ever
+# gets output_token_ids populated (confirmed: every run showed n_with_output_tokens=0) and
+# the server has nothing to resolve a trace_id's turns against either, failing every
+# forward_backward call with "no trainable turns in the provided inputs" regardless of
+# reward or group composition. Found via hud-python's own cookbooks/rl-training/simple_train.py
+# reference example -- not documented in the TrainingClient docstring itself.
 _COMPLETION_KWARGS = {
     "max_tokens": 8192,
-    "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+    "extra_body": {"chat_template_kwargs": {"enable_thinking": False}, "return_token_ids": True},
 }
 
 

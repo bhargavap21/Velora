@@ -11,6 +11,7 @@ import {
 import {
   policyMeta, formatUsd, formatBps, slippageBpsUpTo, usdFromBps,
 } from '@/lib/execution'
+import { apiUrl } from '@/lib/api'
 
 const inputClass =
   'h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
@@ -31,8 +32,8 @@ export default function ExecutionSandbox() {
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/config').then(r => r.json()),
-      fetch('/api/policies').then(r => r.json()),
+      fetch(apiUrl('/api/config')).then(r => r.json()),
+      fetch(apiUrl('/api/policies')).then(r => r.json()),
     ]).then(([config, pol]) => {
       const avail = pol.available ?? ['naive_twap', 'twap']
       setCfg(config)
@@ -88,7 +89,7 @@ export default function ExecutionSandbox() {
     else if (form.dateMode === 'regime') params.set('regime', form.regime)
     if (form.seed !== '' && form.seed != null) params.set('seed', String(form.seed))
 
-    fetch(`/api/compare?${params.toString()}`)
+    fetch(apiUrl(`/api/compare?${params.toString()}`))
       .then(async r => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Request failed'); return r.json() })
       .then(data => {
         setResult(data); setLoading(false); setRunning(true); setCursor(0)

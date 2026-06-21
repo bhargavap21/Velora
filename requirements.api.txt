@@ -1,0 +1,14 @@
+fastapi==0.137.2
+uvicorn==0.49.0
+sse-starlette==3.4.4
+numpy==2.4.6
+pandas==3.0.3
+pyarrow
+gymnasium
+stable-baselines3
+matplotlib==3.11.0
+yfinance==1.4.1
+python-dotenv==1.2.2
+anthropic==0.109.2
+openai==2.43.0
+alpaca-py==0.43.4

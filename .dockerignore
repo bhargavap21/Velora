@@ -1,0 +1,11 @@
+.venv/
+.venv-modal/
+node_modules/
+frontend/
+.git/
+.pytest_cache/
+__pycache__/
+execution_env/data_cache/
+.claude/
+*.pyc
+.DS_Store

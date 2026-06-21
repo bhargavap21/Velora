@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { policyMeta, formatUsd, formatBps, histogram } from '@/lib/execution'
+import { apiUrl } from '@/lib/api'
 
 const inputClass =
   'h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
@@ -29,8 +30,8 @@ export default function Proof() {
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/config').then(r => r.json()),
-      fetch('/api/policies').then(r => r.json()),
+      fetch(apiUrl('/api/config')).then(r => r.json()),
+      fetch(apiUrl('/api/policies')).then(r => r.json()),
     ]).then(([config, pol]) => {
       setCfg(config)
       const avail = (pol.available ?? []).filter(p => ['naive_twap', 'twap', 'ppo'].includes(p))
@@ -67,7 +68,7 @@ export default function Proof() {
       policy: form.policy, baseline: form.baseline, ticker: form.ticker,
       side: form.side, adv_pct: String(form.adv_pct), n_episodes: String(form.n_episodes),
     })
-    const es = new EventSource(`/api/eval/stream?${params.toString()}`)
+    const es = new EventSource(apiUrl(`/api/eval/stream?${params.toString()}`))
     esRef.current = es
 
     es.addEventListener('meta', e => setMeta(JSON.parse(e.data)))

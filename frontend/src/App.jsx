@@ -4,6 +4,7 @@ import Showdown from './pages/Showdown'
 import Proof from './pages/Proof'
 import ExecutionLive from './pages/ExecutionLive'
 import ExecutionSandbox from './pages/ExecutionSandbox'
+import Pitch from './pages/Pitch'
 
 export default function App() {
   return (
@@ -14,6 +15,7 @@ export default function App() {
         <Route path="/proof" element={<Proof />} />
         <Route path="/execution-demo" element={<ExecutionLive />} />
         <Route path="/sandbox" element={<ExecutionSandbox />} />
+        <Route path="/pitch" element={<Pitch />} />
       </Routes>
     </BrowserRouter>
   )

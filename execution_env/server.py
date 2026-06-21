@@ -55,9 +55,13 @@ from execution_env.simulator.market_sim import ensure_daily_data, ensure_daily_d
 
 app = FastAPI(title="Velora execution API")
 
+# Extra production origins (e.g. the Vercel deployment) come from ALLOWED_ORIGINS,
+# comma-separated, so the same image works in dev and prod without a code change.
+_extra_origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3001", "http://localhost:3002"],
+    allow_origins=["http://localhost:3001", "http://localhost:3002", *_extra_origins],
     allow_methods=["GET"],
     allow_headers=["*"],
 )

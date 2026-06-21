@@ -4,6 +4,7 @@ import Navbar from '../components/Navbar'
 import AnimatedNumber from '../components/AnimatedNumber'
 import { policyMeta, formatUsd, formatBps, slippageBpsUpTo, usdFromBps } from '@/lib/execution'
 import { hudEval, ppoHoldout, headlineStats } from '@/data/benchmarks'
+import { apiUrl } from '@/lib/api'
 
 // A pinned, reproducible example scenario for the landing headline. The primary baseline
 // is VWAP-match -- the industry-standard execution benchmark every desk reports against --
@@ -103,7 +104,7 @@ export default function Home() {
   const [stat, setStat] = useState(null)
 
   useEffect(() => {
-    const load = (q) => fetch(`/api/compare?${q}`).then(r => { if (!r.ok) throw new Error(); return r.json() })
+    const load = (q) => fetch(apiUrl(`/api/compare?${q}`)).then(r => { if (!r.ok) throw new Error(); return r.json() })
     load(HERO)
       .catch(() => load(HERO_FALLBACK))
       .then(d => setStat(heroStat(d)))
