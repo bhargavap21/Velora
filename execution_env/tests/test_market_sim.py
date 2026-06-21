@@ -118,11 +118,14 @@ def test_impact_model_is_small_for_reasonable_order_size():
 
 def test_impact_model_grows_superlinearly_for_outsized_orders():
     model = ImpactModel(adv=100_000)
-    # Linear scaling from 5% to 50% ADV would give exactly 10x. The convexity multiplier
-    # should push outsized orders well past that.
-    temp_5pct = model.temporary_impact(5_000)
-    temp_50pct = model.temporary_impact(50_000)
-    perm_5pct = model.permanent_impact(5_000)
-    perm_50pct = model.permanent_impact(50_000)
-    assert temp_50pct / temp_5pct > 10
-    assert perm_50pct / perm_5pct > 10
+    # Compare two per-slice participation rates (0.5% and 45%) both below
+    # _MAX_PARTICIPATION's 0.5 cap, so the saturation logic doesn't flatten the
+    # comparison. Linear scaling (90x in qty) would give exactly 90x impact; the
+    # convexity multiplier should push it well past that.
+    slice_volume = 100_000
+    temp_low = model.temporary_impact(500, slice_volume)
+    temp_high = model.temporary_impact(45_000, slice_volume)
+    perm_low = model.permanent_impact(500, slice_volume)
+    perm_high = model.permanent_impact(45_000, slice_volume)
+    assert temp_high / temp_low > 10
+    assert perm_high / perm_low > 10

@@ -35,11 +35,14 @@ export default function Proof() {
       setCfg(config)
       const avail = (pol.available ?? []).filter(p => ['naive_twap', 'twap', 'ppo'].includes(p))
       setPolicies(avail)
+      // Defaults reproduce the landing-page card exactly (PPO vs the strong VWAP-match
+      // baseline, AAPL buy, 8% ADV, 60 held-out days). Switch the baseline to the naive
+      // equal-time TWAP to see the larger (but easier) edge.
       setForm({
         policy: avail.includes('ppo') ? 'ppo' : 'twap',
-        baseline: 'naive_twap',
-        ticker: config.defaults.ticker,
-        side: config.defaults.side,
+        baseline: avail.includes('twap') ? 'twap' : 'naive_twap',
+        ticker: 'AAPL',
+        side: 'buy',
         adv_pct: config.defaults.adv_pct ?? 8,
         n_episodes: 60,
       })

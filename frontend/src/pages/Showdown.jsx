@@ -40,15 +40,19 @@ export default function Showdown() {
       setCfg(config)
       setPolicies(pol.available ?? ['naive_twap', 'twap'])
       setForm({
-        ticker: config.defaults.ticker,
+        ticker: 'TSLA',
         side: config.defaults.side,
         adv_pct: config.defaults.adv_pct ?? 8,
-        regime: 'high_vol',
-        // Default to a reproducible held-out day with a near-median win, so the first
-        // run reliably shows the typical outcome. Clear the seed for a random day.
-        seed: 4,
+        // A representative *random* held-out day (not a cherry-picked stress regime):
+        // seed 7 resolves to 2026-03-23, where PPO's edge over VWAP-match (~+31 bps) sits
+        // right at the median TSLA result. Change the regime or clear the seed to explore
+        // freely -- including the ~20% of days where the baseline wins.
+        regime: 'random',
+        seed: 7,
+        // Default baseline is VWAP-match -- the industry-standard benchmark. Switch to
+        // "Naive TWAP" to see the larger (but much easier) edge over the equal-time floor.
         policyA: (pol.available ?? []).includes('ppo') ? 'ppo' : 'twap',
-        policyB: 'naive_twap',
+        policyB: (pol.available ?? []).includes('twap') ? 'twap' : 'naive_twap',
       })
     }).catch(() => setError('Failed to load configuration'))
   }, [])
@@ -341,7 +345,7 @@ export default function Showdown() {
           <Card>
             <CardContent className="flex h-72 flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
               <p>Pick a scenario and hit <span className="font-medium text-foreground">Run showdown</span></p>
-              <p className="text-xs">Try a high-volatility TSLA day at 10% of ADV — that's where smart scheduling earns its keep</p>
+              <p className="text-xs">Clear the seed for a genuinely random day, or shuffle regimes — the Proof page has the win-rate across all of them</p>
             </CardContent>
           </Card>
         )}

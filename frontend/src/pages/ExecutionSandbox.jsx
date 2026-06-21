@@ -37,7 +37,9 @@ export default function ExecutionSandbox() {
       const avail = pol.available ?? ['naive_twap', 'twap']
       setCfg(config)
       setAvailable(avail)
-      setSelected(avail.includes('ppo') ? ['ppo', 'naive_twap'] : ['twap', 'naive_twap'])
+      // Lead with the agent vs the VWAP-match benchmark (the industry standard); keep the
+      // naive equal-time TWAP as the third "floor" line for visual context.
+      setSelected(avail.includes('ppo') ? ['ppo', 'twap', 'naive_twap'] : ['twap', 'naive_twap'])
       setForm({
         ticker: config.defaults.ticker,
         side: config.defaults.side,

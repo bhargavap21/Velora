@@ -74,6 +74,18 @@ def _daily_cache_stale(df: pd.DataFrame) -> bool:
 _TEMP_IMPACT_COEF = 0.003
 _PERM_IMPACT_COEF = 0.010
 _OUTSIZED_CONVEXITY = 3.0
+# Participation feeding the impact law is clamped here. Real markets can't be pushed
+# arbitrarily far inside a single slice -- resting liquidity replenishes, other
+# participants step in, and exchanges have volatility halts. Without a cap, a naive
+# equal-time schedule that dumps many multiples of a thin slice's volume drives
+# participation >> 1, and the convexity term produces absurd >1000% single-slice price
+# moves that compound through the permanent offset (an artifact, not a real cost). At the
+# cap, temporary impact saturates near _TEMP_IMPACT_COEF*sqrt(.5)*(1+3*.25) ~ 37 bps and
+# permanent near _PERM_IMPACT_COEF*.5*(1+3*.25) ~ 88 bps per slice -- a severe but finite
+# penalty for over-trading thin liquidity, which is what we want the agent to learn to
+# avoid. Volume-aware schedules sit far below the cap (~8% participation), so this only
+# bounds the pathological tail and never touches the regime the policies actually use.
+_MAX_PARTICIPATION = 0.5
 
 
 def load_daily_data() -> dict[str, pd.DataFrame]:
@@ -380,7 +392,11 @@ class ImpactModel:
         share of (ADV / typical-slices) when no slice volume is supplied, so the model
         still works if called without per-slice context."""
         denom = slice_volume if slice_volume is not None else self.adv / 26.0
-        return qty / max(denom, 1.0)
+        raw = qty / max(denom, 1.0)
+        # Saturate: beyond the cap, additional size doesn't keep moving the price without
+        # bound (see _MAX_PARTICIPATION). This bounds both the base law and the convexity
+        # term, since both consume this value.
+        return min(raw, _MAX_PARTICIPATION)
 
     def temporary_impact(self, qty: float, slice_volume: float | None = None) -> float:
         """Price impact (fraction of price) that affects only this slice's fill, then

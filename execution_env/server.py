@@ -84,6 +84,9 @@ def _get_ppo_model():
     return _ppo_model
 
 
+# Defensive clip (in bps) on the reported per-episode slippage metric. See _episode_metrics.
+_SLIPPAGE_BPS_CLIP = 5_000.0
+
 # Policy display labels, shared with the frontend's understanding of each arm.
 POLICY_LABELS = {
     "naive_twap": "TWAP (equal-time)",
@@ -120,6 +123,13 @@ def _episode_metrics(env: ExecutionEnv) -> dict:
     if benchmark_vwap > 0:
         sign = 1.0 if env._side == "buy" else -1.0
         slippage_bps = sign * (benchmark_vwap - agent_vwap) / benchmark_vwap * 10_000
+
+    # Defensive bound on the *reported* metric. The impact model already saturates
+    # participation (see _MAX_PARTICIPATION) so exec prices can't explode, keeping realistic
+    # paths well inside this range; this clip is only a safety net so that no single
+    # pathological path could ever dominate an aggregate mean we report as evidence.
+    # +/-5000 bps (50%) is far beyond any realistic single-day execution slippage.
+    slippage_bps = float(np.clip(slippage_bps, -_SLIPPAGE_BPS_CLIP, _SLIPPAGE_BPS_CLIP))
 
     return {
         "agent_vwap": round(agent_vwap, 4),

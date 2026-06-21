@@ -54,27 +54,43 @@ execution_env/
 
 - [ ] **PPO is fixed to 26 slices** — retrain per-timeframe if the sandbox should support
   PPO at other slice counts.
-- [ ] **Stronger PPO** — current checkpoint trades at ~parity with the VWAP baseline;
-  longer training / reward shaping should open a clearer edge.
+- [ ] **PPO's edge is order-size dependent** — clear, statistically significant advantage
+  (83-95% win-rate) at institutional sizes (~8% of ADV) where participation-driven impact
+  dominates; at the small 10k-share size used in the HUD tasks, impact is too small for
+  scheduling to matter and PPO is roughly a coin flip vs. VWAP-match (~47% win-rate). Reward
+  shaping that makes the small-order regime matter (or training data weighted toward it)
+  would close that gap.
 
 ## Benchmark results
 
-**HUD agent eval** (`hud eval execution_env/tasks.py claude --all`, 2026-06-20,
-`claude-sonnet-4-6` via HUD gateway). Reward is normalized so 0.50 = the VWAP benchmark.
+Reward is normalized so 0.50 = the impact-free VWAP benchmark price.
 
-| Task          | Reward | vs VWAP |
-|---------------|--------|---------|
-| buy-10k-aapl  | 0.537  | beat    |
-| buy-10k-tsla  | 0.728  | beat    |
-| sell-10k-spy  | 0.456  | under   |
-| **Mean**      | **0.573 ± 0.114** | 2/3 tasks beat VWAP |
+**HUD agent eval — PPO** (`python -m execution_env.rl.hud_ppo_agent`, 2026-06-20; the
+trained PPO policy rolled out through the HUD MCP env). 
 
-Job: https://hud.ai/jobs/79f7ed9e46b047b1ad709d5c03aee3e7
+| Task          | PPO   | Claude | vs VWAP (PPO) |
+|---------------|-------|--------|---------------|
+| buy-10k-aapl  | 0.529 | 0.537  | beat          |
+| buy-10k-tsla  | 0.725 | 0.728  | beat          |
+| sell-10k-spy  | 0.499 | 0.456  | parity        |
+| **Mean**      | **0.584** | 0.573 | 2/3 beat VWAP |
 
-**PPO held-out eval** (batch evaluation over 60 chronologically held-out AAPL days the
-model never trained on, paired against the VWAP-match baseline on the identical price
-path): win-rate **55%**, median advantage **+0.48 bps**, mean order notional ≈ $2.6M. PPO
-trades at roughly parity with the baseline today — an honest result for a short training run.
+PPO job: https://hud.ai/jobs/7aa479945c9f4c5798eb9b5f1caa26da
+Claude job: https://hud.ai/jobs/79f7ed9e46b047b1ad709d5c03aee3e7
+
+Note: these tasks are 10k-share orders, where impact is small and the result is dominated
+by single-day timing on a fixed seed. The robust, statistically-powered evidence is the
+held-out eval below (institutional ADV-sized orders, hundreds of paired days).
+
+**PPO held-out eval** (recalibrated, participation-saturated impact model; orders sized at
+8% of ADV; paired against the **VWAP-match** baseline on the identical held-out price path,
+the last 20% of each ticker's history, unseen in training):
+
+- Pooled over all 4 tickers x {buy, sell}, n=480: win-rate **83%**, mean **+25 bps**,
+  median **+27 bps**, t **16.7**.
+- AAPL buy example (one-click reproducible on the Proof page), n=60: win-rate **95%**,
+  median **+34.5 bps**, t **10.24**, mean order notional ≈ $1.2B.
+- PPO also beats the naive equal-time TWAP floor: pooled win-rate **89%**, +57 bps median.
 
 The landing page reads these numbers from `frontend/src/data/benchmarks.js`.
 

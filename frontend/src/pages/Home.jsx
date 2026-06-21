@@ -5,9 +5,14 @@ import AnimatedNumber from '../components/AnimatedNumber'
 import { policyMeta, formatUsd, formatBps, slippageBpsUpTo, usdFromBps } from '@/lib/execution'
 import { hudEval, ppoHoldout, headlineStats } from '@/data/benchmarks'
 
-// A pinned, reproducible example scenario for the landing headline.
-const HERO = 'policies=ppo,naive_twap&ticker=TSLA&side=buy&adv_pct=10&regime=high_vol&seed=7'
-const HERO_FALLBACK = 'policies=twap,naive_twap&ticker=TSLA&side=buy&adv_pct=10&regime=high_vol&seed=7'
+// A pinned, reproducible example scenario for the landing headline. The primary baseline
+// is VWAP-match -- the industry-standard execution benchmark every desk reports against --
+// NOT the naive equal-time TWAP. Deliberately a representative held-out day (regime=random
+// resolves to 2026-03-23, in the last-20% holdout), NOT a cherry-picked outlier: PPO's
+// +~31 bps here sits right at the median TSLA-vs-VWAP-match edge, and PPO beats VWAP-match
+// on ~80% of such TSLA days (see Proof).
+const HERO = 'policies=ppo,twap&ticker=TSLA&side=buy&adv_pct=8&regime=random&seed=7'
+const HERO_FALLBACK = 'policies=twap,naive_twap&ticker=TSLA&side=buy&adv_pct=8&regime=random&seed=7'
 
 function heroStat(data) {
   if (!data?.policies?.length) return null
@@ -191,73 +196,100 @@ export default function Home() {
             </span>
           </h2>
           <p className="mt-4 max-w-2xl text-[15px] font-light leading-[1.65] tracking-[-0.012em] text-[#777a88]">
-            The {hudEval.model} execution agent, evaluated through the HUD gateway on {hudEval.date}.
-            Reward is normalized so 0.50 equals matching VWAP — above 0.50 beats the desk's default.
+            The PPO (RL) and Claude (LLM) execution agents, each rolled out through the HUD environment
+            on {hudEval.date}. Reward is normalized so 0.50 equals the VWAP benchmark — above 0.50 beats
+            the desk's default.
           </p>
         </div>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.4fr_1fr]">
-          {/* HUD eval card */}
+          {/* HUD eval card — PPO (RL) vs Claude (LLM), same 3 tasks */}
           <div className="overflow-hidden rounded-[10px] border border-[#2e3038] bg-[#1c1d22]">
             <div className="flex items-center justify-between border-b border-[#2e3038] bg-[#08080a] px-6 py-4">
               <div>
                 <p className="text-[13px] font-medium text-[#e2e3e9]">HUD agent evaluation</p>
                 <p className="mt-0.5 text-[11px] font-light text-[#5e616e]">Per-task normalized reward · {hudEval.runtime}</p>
               </div>
-              <div className="text-right">
-                <p className="text-[28px] font-light leading-none text-[#cc9166]" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  {hudEval.meanScore.toFixed(3)}
-                </p>
-                <p className="mt-1 text-[11px] font-light text-[#5e616e]">mean · {hudEval.tasksBeatBenchmark}/{hudEval.tasksTotal} beat VWAP</p>
+              <div className="flex gap-6 text-right">
+                {hudEval.agents.map(ag => (
+                  <div key={ag.id}>
+                    <p className="text-[24px] font-light leading-none" style={{ color: ag.color, fontVariantNumeric: 'tabular-nums' }}>
+                      {ag.meanScore.toFixed(3)}
+                    </p>
+                    <p className="mt-1 text-[11px] font-light text-[#5e616e]">{ag.label.split(' ')[0]} · {ag.tasksBeat}/{hudEval.tasks.length}</p>
+                  </div>
+                ))}
               </div>
             </div>
-            <div className="space-y-5 p-6">
-              {hudEval.tasks.map(task => {
-                // Map score onto a bar; 0.5 (VWAP) sits at the midpoint, 1.0 fills the bar.
-                const pct = Math.max(4, Math.min(100, task.score * 100))
-                const color = task.beat ? '#cc9166' : '#c0553a'
-                return (
+            <div className="p-6">
+              {/* Column legend */}
+              <div className="mb-3 flex items-center justify-end gap-4">
+                {hudEval.agents.map(ag => (
+                  <span key={ag.id} className="flex items-center gap-1.5 text-[11px] font-medium" style={{ color: ag.color }}>
+                    <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: ag.color }} />
+                    {ag.label.split(' ')[0]}
+                  </span>
+                ))}
+              </div>
+              <div className="space-y-4">
+                {hudEval.tasks.map(task => (
                   <div key={task.id}>
                     <div className="mb-1.5 flex items-center justify-between">
                       <span className="text-[12px] font-medium text-[#acafb9]">{task.label}</span>
-                      <span className="text-[12px] font-medium" style={{ color, fontVariantNumeric: 'tabular-nums' }}>
-                        {task.score.toFixed(3)} {task.beat ? '· beat' : '· missed'}
-                      </span>
+                      <div className="flex gap-4">
+                        {hudEval.agents.map(ag => {
+                          const score = ag.scores[task.id]
+                          const beat = score > hudEval.baselineScore
+                          return (
+                            <span key={ag.id} className="w-[64px] text-right text-[12px] font-medium tabular-nums"
+                              style={{ color: beat ? ag.color : '#c0553a' }}>
+                              {score.toFixed(3)}
+                            </span>
+                          )
+                        })}
+                      </div>
                     </div>
+                    {/* Overlaid bars: one per agent, 0.50 VWAP marker at midpoint */}
                     <div className="relative h-[4px] rounded-full bg-[#2e3038]">
-                      {/* VWAP midpoint marker at 0.50 */}
-                      <span className="absolute top-[-3px] h-[10px] w-px bg-[#5e616e]" style={{ left: '50%' }} />
-                      <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
+                      <span className="absolute top-[-3px] z-10 h-[10px] w-px bg-[#777a88]" style={{ left: '50%' }} />
+                      {hudEval.agents.map((ag, i) => {
+                        const pct = Math.max(2, Math.min(100, ag.scores[task.id] * 100))
+                        return (
+                          <div key={ag.id} className="absolute rounded-full transition-all"
+                            style={{ width: `${pct}%`, height: 4, top: 0, background: ag.color, opacity: i === 0 ? 0.95 : 0.55 }} />
+                        )
+                      })}
                     </div>
                   </div>
-                )
-              })}
-              <p className="pt-1 text-[11px] font-light text-[#464853]">
-                Vertical marker = VWAP benchmark (0.50). Bars past it beat the desk's default.
+                ))}
+              </div>
+              <p className="pt-4 text-[11px] font-light text-[#464853]">
+                Vertical marker = VWAP benchmark (0.50). 10k-share tasks on a fixed seed — for the
+                statistically-powered result at institutional order sizes, see the Proof page.
               </p>
             </div>
-            <div className="border-t border-[#2e3038] px-6 py-3">
-              <a
-                href={hudEval.jobUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-[12px] font-medium text-[#cc9166] transition-opacity hover:opacity-75"
-              >
-                View the HUD job →
-              </a>
+            <div className="flex gap-5 border-t border-[#2e3038] px-6 py-3">
+              {hudEval.agents.map(ag => (
+                <a key={ag.id} href={ag.jobUrl} target="_blank" rel="noreferrer"
+                  className="text-[12px] font-medium transition-opacity hover:opacity-75" style={{ color: ag.color }}>
+                  {ag.label.split(' ')[0]} HUD job →
+                </a>
+              ))}
             </div>
           </div>
 
           {/* PPO held-out card */}
           <div className="flex flex-col justify-between overflow-hidden rounded-[10px] border border-[#2e3038] bg-[#1c1d22]">
             <div className="p-6">
-              <p className="text-[10px] font-medium uppercase tracking-[0.07em] text-[#464853]">PPO · held-out days</p>
+              <p className="text-[10px] font-medium uppercase tracking-[0.07em] text-[#464853]">PPO · held-out days · institutional size</p>
               <p className="mt-3 text-[44px] font-light leading-none text-[#acafb9]" style={{ fontVariantNumeric: 'tabular-nums' }}>
                 {(ppoHoldout.winRate * 100).toFixed(0)}%
               </p>
               <p className="mt-2 text-[13px] font-light leading-[1.6] text-[#777a88]">
                 win-rate vs the {ppoHoldout.baseline} baseline across {ppoHoldout.nEpisodes} {ppoHoldout.ticker} days the
-                model never trained on — same paired price paths, the only variable is the policy.
+                model never trained on, at orders sized {ppoHoldout.advPct}% of ADV — same paired price paths, the
+                only variable is the policy. At the 10k-share size used in the HUD tasks above, impact is too
+                small for this edge to show up (PPO ≈ coin-flip vs VWAP-match there).
               </p>
             </div>
             <div className="grid grid-cols-3 divide-x divide-[#2e3038] border-t border-[#2e3038]">
@@ -311,7 +343,7 @@ export default function Home() {
               {
                 title: 'Showdown',
                 to: '/showdown',
-                desc: 'Race the RL agent against the naive baseline on the same price path, slice by slice. The only variable is the policy.',
+                desc: 'Race the RL agent against the VWAP-match benchmark on the same price path, slice by slice. The only variable is the policy.',
               },
               {
                 title: 'Proof',
