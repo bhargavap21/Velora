@@ -15,7 +15,7 @@ const POLICY_LABELS = {
 /* ── Shared card primitive ── */
 function Panel({ className = '', children }) {
   return (
-    <div className={`rounded-[10px] border border-[#2e3038] bg-[#1c1d22] ${className}`}>
+    <div className={`rounded-[10px] border border-[#1e2028] bg-[#0d0e12] ${className}`}>
       {children}
     </div>
   )
@@ -145,7 +145,7 @@ export default function ExecutionLive() {
 
         {/* ── Main chart ── */}
         <Panel className="mb-4">
-          <div className="border-b border-[#2e3038] px-6 py-4">
+          <div className="border-b border-[#1e2028] px-6 py-4">
             <p className="text-[13px] font-medium text-[#e2e3e9]">Price path &amp; execution</p>
             <p className="mt-0.5 text-[12px] text-[#5e616e]">
               Market price, VWAP benchmark, and agent execution cost
@@ -240,7 +240,7 @@ export default function ExecutionLive() {
               {episode.llm_reasoning}
             </p>
             {episode.llm_primitive && (
-              <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-[#2e3038] pt-4 text-[12px] text-[#5e616e]">
+              <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-[#1e2028] pt-4 text-[12px] text-[#5e616e]">
                 <span>
                   Schedule primitive:{' '}
                   <span className="font-medium text-[#e2e3e9]">{episode.llm_primitive}</span>
