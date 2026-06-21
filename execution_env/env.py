@@ -58,13 +58,15 @@ necessary.
 1. Call read_market_context() to see the open price and intraday volume curve.
 2. Call submit_schedule() with a JSON string containing your plan.
 
-Each schedule entry is a participation multiplier in [0, 2] for that slice — NOT a share
-count. 1.0 means "trade at exactly the VWAP-implied rate" (i.e. exactly volume_curve[i] *
-total_shares shares that slice), below 1.0 trades less than that, above 1.0 trades more.
-Every entry must be in [0, 2]; submitting raw share counts (e.g. tens of thousands) will be
-rejected. Example for a 4-slice order: [1.0, 1.0, 1.0, 1.0] trades exactly at the VWAP rate
-every slice; [1.5, 1.5, 0.5, 0.5] front-loads the order while still filling completely.
-The order must be fully filled by the end.
+Each schedule entry is a participation multiplier in [0, 2] for that slice. It is NOT a
+share count, and it is NOT the volume_curve fraction itself (do not copy volume_curve[i]
+into the schedule) — 1.0 always means "trade at exactly the natural rate for this slice,"
+regardless of how big or small that slice's volume_curve fraction is. Below 1.0 trades
+less than that rate, above 1.0 trades more. Every entry must be in [0, 2]; submitting raw
+share counts (e.g. tens of thousands) will be rejected. Example for a 4-slice order:
+[1.0, 1.0, 1.0, 1.0] trades at exactly the natural rate every slice regardless of the
+volume curve's shape; [1.5, 1.5, 0.5, 0.5] front-loads the order while still filling
+completely. The order must be fully filled by the end.
 
 You will be scored on slippage vs. VWAP (lower slippage is better) plus a penalty for
 any unfilled inventory.
