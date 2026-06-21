@@ -1,5 +1,6 @@
 import {
-  ComposedChart, Line, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  ComposedChart, Line, Area, Scatter,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts'
 
 /**
@@ -31,13 +32,7 @@ export function buildChartData(episode, upToSlice) {
     }
     const benchmarkVwap = cumBenchQty > 0 ? cumBenchNotional / cumBenchQty : null
 
-    rows.push({
-      i,
-      price: path[i],
-      agentVwap,
-      benchmarkVwap,
-      execQty,
-    })
+    rows.push({ i, price: path[i], agentVwap, benchmarkVwap, execQty })
   }
   return rows
 }
@@ -50,25 +45,116 @@ export function currentSlippageBps(episode, upToSlice) {
   return sign * ((last.benchmarkVwap - last.agentVwap) / last.benchmarkVwap) * 10_000
 }
 
+const TOOLTIP_STYLE = {
+  backgroundColor: '#121317',
+  border: '1px solid #2e3038',
+  borderRadius: 4,
+  fontSize: 12,
+  color: '#acafb9',
+  boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+}
+
 export default function ExecutionChart({ episode, currentSlice }) {
   const data = buildChartData(episode, currentSlice)
 
   return (
     <ResponsiveContainer width="100%" height={320}>
-      <ComposedChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-        <XAxis dataKey="i" stroke="var(--muted-foreground)" tick={{ fontSize: 11 }} label={{ value: 'Slice', position: 'insideBottom', offset: -2, fontSize: 11, fill: 'var(--muted-foreground)' }} />
-        <YAxis stroke="var(--muted-foreground)" tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
-        <Tooltip
-          contentStyle={{ backgroundColor: 'var(--popover)', border: '1px solid var(--border)', borderRadius: 8 }}
-          labelStyle={{ color: 'var(--muted-foreground)' }}
-          formatter={(value, name) => [typeof value === 'number' ? value.toFixed(3) : value, name]}
+      <ComposedChart data={data} margin={{ top: 8, right: 16, bottom: 12, left: 0 }}>
+        <defs>
+          {/* Molten gold area fill — agent execution price */}
+          <linearGradient id="agentFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stopColor="#cc9166" stopOpacity={0.2} />
+            <stop offset="100%" stopColor="#cc9166" stopOpacity={0}   />
+          </linearGradient>
+          {/* Subtle fill under market price */}
+          <linearGradient id="priceFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stopColor="#464853" stopOpacity={0.12} />
+            <stop offset="100%" stopColor="#464853" stopOpacity={0}    />
+          </linearGradient>
+        </defs>
+
+        <CartesianGrid strokeDasharray="3 3" stroke="#2e3038" vertical={false} />
+
+        <XAxis
+          dataKey="i"
+          stroke="#2e3038"
+          tick={{ fontSize: 11, fill: '#777a88', fontFamily: 'Inter, sans-serif' }}
+          axisLine={{ stroke: '#2e3038' }}
+          tickLine={false}
+          label={{ value: 'Slice', position: 'insideBottom', offset: -4, fontSize: 11, fill: '#5e616e' }}
         />
-        <Legend />
-        <Line type="monotone" dataKey="price" name="Market price" stroke="#64748b" dot={false} strokeWidth={1.5} isAnimationActive={false} />
-        <Line type="monotone" dataKey="benchmarkVwap" name="VWAP benchmark" stroke="#f59e0b" strokeDasharray="4 3" dot={false} strokeWidth={2} isAnimationActive={false} />
-        <Line type="monotone" dataKey="agentVwap" name="Agent avg. exec price" stroke="#10b981" dot={false} strokeWidth={2} isAnimationActive={false} />
-        <Scatter dataKey="execQty" name="Execution size" fill="#3b82f6" />
+        <YAxis
+          stroke="#2e3038"
+          tick={{ fontSize: 11, fill: '#777a88', fontFamily: 'Inter, sans-serif' }}
+          axisLine={false}
+          tickLine={false}
+          domain={['auto', 'auto']}
+          width={56}
+        />
+
+        <Tooltip
+          contentStyle={TOOLTIP_STYLE}
+          labelStyle={{ color: '#5e616e', marginBottom: 4 }}
+          itemStyle={{ color: '#acafb9' }}
+          cursor={{ stroke: '#2e3038', strokeWidth: 1 }}
+          formatter={(value, name) => [
+            typeof value === 'number' ? value.toFixed(3) : value,
+            name,
+          ]}
+        />
+
+        <Legend
+          wrapperStyle={{
+            fontSize: 12,
+            color: '#9194a1',
+            fontFamily: 'Inter, sans-serif',
+            paddingTop: 12,
+          }}
+        />
+
+        {/* Market price — understated background line */}
+        <Area
+          type="monotone"
+          dataKey="price"
+          name="Market price"
+          stroke="#464853"
+          strokeWidth={1}
+          fill="url(#priceFill)"
+          dot={false}
+          isAnimationActive={false}
+        />
+
+        {/* VWAP benchmark — ember gold dashed */}
+        <Line
+          type="monotone"
+          dataKey="benchmarkVwap"
+          name="VWAP benchmark"
+          stroke="#cc9166"
+          strokeDasharray="4 3"
+          strokeWidth={1.5}
+          dot={false}
+          isAnimationActive={false}
+        />
+
+        {/* Agent avg. execution price — pearl with molten gold fill */}
+        <Area
+          type="monotone"
+          dataKey="agentVwap"
+          name="Agent avg. price"
+          stroke="#acafb9"
+          strokeWidth={2}
+          fill="url(#agentFill)"
+          dot={false}
+          isAnimationActive={false}
+        />
+
+        {/* Execution sizes — gold accent dots */}
+        <Scatter
+          dataKey="execQty"
+          name="Exec size"
+          fill="#cc9166"
+          opacity={0.55}
+        />
       </ComposedChart>
     </ResponsiveContainer>
   )
