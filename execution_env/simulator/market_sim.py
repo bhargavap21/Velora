@@ -57,12 +57,23 @@ def _daily_cache_stale(df: pd.DataFrame) -> bool:
     target = pd.Timestamp(_data_end()).normalize()
     return df.index.max().normalize() < target - pd.Timedelta(days=5)
 
-# Almgren-Chriss-style impact coefficients, calibrated so a "reasonable" order (~1% ADV)
-# costs single-digit bps -- in line with published market-impact magnitudes -- while the
-# convexity multiplier below makes outsized orders (tens of % of ADV) blow up superlinearly.
-_TEMP_IMPACT_COEF = 0.002
-_PERM_IMPACT_COEF = 0.01
-_OUTSIZED_CONVEXITY = 20.0
+# Almgren-Chriss-style impact coefficients. Impact is driven by the *participation rate*
+# -- the order's share of the volume actually trading in that slice (qty / slice_volume) --
+# NOT the order's share of the whole day's ADV. This is the standard market-microstructure
+# model and the reason intraday *scheduling* matters: trading the same number of shares in a
+# thin midday slice consumes a far larger fraction of that slice's liquidity (high
+# participation -> high impact) than trading it into the heavy open/close. A naive
+# equal-time schedule over-trades the thin slices and pays for it; a volume-aware schedule
+# holds participation roughly constant and minimizes total impact (the classic result).
+#
+# Calibrated so a ~10% participation rate costs ~10 bps of temporary impact, with the
+# convexity multiplier making very high participation (consuming most of a slice's volume)
+# blow up superlinearly. NOTE: the coefficient is small because `participation` is now the
+# per-slice rate (qty / slice_volume), not the share of whole-day ADV -- so 10% here means
+# consuming 10% of a single slice's liquidity. (0.003 * sqrt(0.10) ~ 9.8 bps.)
+_TEMP_IMPACT_COEF = 0.003
+_PERM_IMPACT_COEF = 0.010
+_OUTSIZED_CONVEXITY = 3.0
 
 
 def load_daily_data() -> dict[str, pd.DataFrame]:
@@ -352,28 +363,37 @@ def generate_intraday_path(day_row: pd.Series, n_slices: int, rng: np.random.Gen
 
 
 def _convexity_multiplier(participation: float) -> float:
-    """Multiplier applied on top of the base impact law. Negligible for normal-sized
-    orders (~1-10% ADV) but grows superlinearly for outsized orders, reflecting that
-    very large orders can't be executed without disproportionate price concessions.
+    """Multiplier applied on top of the base impact law. Negligible at low participation
+    rates but grows superlinearly as the order consumes a large fraction of a slice's
+    volume, reflecting that you can't sweep most of a slice's liquidity without
+    disproportionate price concessions.
     """
     return 1.0 + _OUTSIZED_CONVEXITY * participation**2
 
 
 @dataclass
 class ImpactModel:
-    adv: float  # average daily volume for this ticker, used to normalize order size
+    adv: float  # average daily volume for this ticker; floor for slice volume
 
-    def temporary_impact(self, qty: float) -> float:
+    def _participation(self, qty: float, slice_volume: float | None) -> float:
+        """Order's share of the volume actually trading in this slice. Falls back to a
+        share of (ADV / typical-slices) when no slice volume is supplied, so the model
+        still works if called without per-slice context."""
+        denom = slice_volume if slice_volume is not None else self.adv / 26.0
+        return qty / max(denom, 1.0)
+
+    def temporary_impact(self, qty: float, slice_volume: float | None = None) -> float:
         """Price impact (fraction of price) that affects only this slice's fill, then
-        decays away. Follows the standard square-root law for normal order sizes, with
-        a convexity multiplier that makes outsized orders blow up superlinearly.
+        decays away. Square-root law in the participation rate (qty / slice volume), with
+        a convexity multiplier that makes sweeping most of a slice's volume blow up
+        superlinearly.
         """
-        participation = qty / max(self.adv, 1.0)
+        participation = self._participation(qty, slice_volume)
         return _TEMP_IMPACT_COEF * np.sqrt(participation) * _convexity_multiplier(participation)
 
-    def permanent_impact(self, qty: float) -> float:
+    def permanent_impact(self, qty: float, slice_volume: float | None = None) -> float:
         """Price impact (fraction of price) that persists for the rest of the episode."""
-        participation = qty / max(self.adv, 1.0)
+        participation = self._participation(qty, slice_volume)
         return _PERM_IMPACT_COEF * participation * _convexity_multiplier(participation)
 
 

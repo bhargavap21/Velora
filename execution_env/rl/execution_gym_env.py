@@ -30,6 +30,7 @@ from execution_env.simulator.market_sim import (
 _TICKERS = ["TSLA", "NVDA", "AAPL", "SPY"]
 _N_SLICES = 26  # e.g. 15-min slices across a 6.5h trading day
 _TOTAL_SHARES = 10_000
+_MIN_SHARES = 1_000
 
 
 class ExecutionEnv(gym.Env):
@@ -42,6 +43,7 @@ class ExecutionEnv(gym.Env):
         side: str = "buy",
         day_range: tuple[float, float] = (0.0, 1.0),
         tickers: list[str] | None = None,
+        order_adv_pct_range: tuple[float, float] | None = None,
     ):
         """day_range restricts which (ticker, day) pairs reset() can sample, as a
         fraction of each ticker's chronological history -- e.g. (0.0, 0.8) for a
@@ -51,6 +53,12 @@ class ExecutionEnv(gym.Env):
 
         tickers restricts which tickers reset() can sample from (defaults to all of
         _TICKERS) -- e.g. so a caller can pin an episode to a single requested ticker.
+
+        order_adv_pct_range, if set, makes reset() size the parent order as a random
+        fraction of the day's ADV drawn from this range (e.g. (0.05, 0.25)) instead of a
+        fixed share count. Used for training so the policy sees a spread of order sizes
+        relative to liquidity -- the regime where intraday scheduling actually matters,
+        because impact is driven by participation rate.
         """
         super().__init__()
         self._n_slices = n_slices
@@ -58,6 +66,8 @@ class ExecutionEnv(gym.Env):
         self._side = side
         self._day_range = day_range
         self._tickers = tickers or _TICKERS
+        self._order_adv_pct_range = order_adv_pct_range
+        self._adv = 0.0
         self._data = load_daily_data()
         self._minute_data = {ticker: load_minute_data(ticker) for ticker in self._tickers}
 
@@ -140,7 +150,15 @@ class ExecutionEnv(gym.Env):
         )
 
         adv = float(day_row["Volume"])
+        self._adv = adv
         self._impact = ImpactModel(adv=adv)
+
+        # When configured, size the order as a fraction of ADV so the agent trains across
+        # the order-size regimes where participation-driven impact dominates.
+        if self._order_adv_pct_range is not None:
+            lo, hi = self._order_adv_pct_range
+            pct = float(self.np_random.uniform(lo, hi))
+            self._total_shares = max(_MIN_SHARES, int(round(pct * adv)))
 
         self._slice_idx = 0
         self._shares_remaining = float(self._total_shares)
@@ -173,8 +191,9 @@ class ExecutionEnv(gym.Env):
         qty = float(np.clip(participation * fair_share_qty, 0.0, self._shares_remaining))
 
         base_price = self._path[self._slice_idx] * (1 + self._permanent_offset)
-        temp_impact = self._impact.temporary_impact(qty)
-        perm_impact = self._impact.permanent_impact(qty)
+        slice_volume = float(self._volume_curve[self._slice_idx] * self._adv)
+        temp_impact = self._impact.temporary_impact(qty, slice_volume)
+        perm_impact = self._impact.permanent_impact(qty, slice_volume)
         sign = 1 if self._side == "buy" else -1
         exec_price = base_price * (1 + sign * temp_impact)
         self._permanent_offset += sign * perm_impact
@@ -193,6 +212,31 @@ class ExecutionEnv(gym.Env):
             reward = slippage_reward(agent_vwap, benchmark_vwap, self._side, filled_fraction)
 
         return self._build_obs(), reward, terminated, False, {}
+
+
+def naive_twap_action(env: "ExecutionEnv") -> np.ndarray:
+    """Honest, volume-agnostic time-weighted baseline: trade an equal share of the
+    *remaining* inventory across the *remaining* slices, ignoring the volume curve.
+
+    Returns the participation multiplier that yields that equal-time quantity given the
+    env's current state. Because the env's action is a multiplier on the volume-curve
+    fair share, this multiplier is high in thin slices and low in thick ones -- i.e. the
+    naive schedule deliberately ignores liquidity, which is exactly why it pays more
+    participation-driven impact than a volume-aware schedule. The last slice resolves to
+    multiplier 1.0 on the full remainder, so the order always fully fills."""
+    i = env._slice_idx
+    remaining_slices = env._n_slices - i
+    if remaining_slices <= 0 or env._shares_remaining <= 0:
+        return np.array([0.0], dtype=np.float32)
+
+    target_qty = env._shares_remaining / remaining_slices
+    remaining_weights = float(env._volume_curve[i:].sum())
+    if remaining_weights <= 0:
+        return np.array([1.0], dtype=np.float32)
+    fair_share_qty = (env._volume_curve[i] / remaining_weights) * env._shares_remaining
+    if fair_share_qty <= 0:
+        return np.array([2.0], dtype=np.float32)
+    return np.array([target_qty / fair_share_qty], dtype=np.float32)
 
 
 if __name__ == "__main__":

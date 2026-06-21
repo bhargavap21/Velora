@@ -31,14 +31,26 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
-from execution_env.rl.execution_gym_env import ExecutionEnv, _N_SLICES, _TICKERS, _TOTAL_SHARES
-from execution_env.rl.train_ppo import MODEL_PATH, twap_action
+from execution_env.rl.execution_gym_env import (
+    ExecutionEnv,
+    _N_SLICES,
+    _TICKERS,
+    _TOTAL_SHARES,
+    naive_twap_action,
+)
+from execution_env.rl.train_ppo import (
+    MODEL_PATH,
+    _HOLDOUT_DAY_RANGE,
+    twap_action,
+)
 from execution_env.sandbox_config import (
     CONSTRAINTS,
     build_sandbox_config,
     resolve_regime_date,
+    shares_from_adv_pct,
     shares_from_capital,
 )
+from execution_env.simulator.benchmark import compute_vwap, execution_vwap
 from execution_env.simulator.market_sim import ensure_daily_date, load_daily_data
 
 app = FastAPI(title="Velora execution API")
@@ -70,6 +82,51 @@ def _get_ppo_model():
 
         _ppo_model = PPO.load(MODEL_PATH)
     return _ppo_model
+
+
+# Policy display labels, shared with the frontend's understanding of each arm.
+POLICY_LABELS = {
+    "naive_twap": "TWAP (equal-time)",
+    "twap": "VWAP-match",
+    "ppo": "PPO (RL agent)",
+    "llm": "Claude",
+    "fireworks": "GPT-OSS",
+}
+
+
+def _stateless_action(policy: str, env: ExecutionEnv, i: int, obs: np.ndarray, ppo_model) -> np.ndarray:
+    """Action for the stateless policies (twap / naive_twap / ppo) used by the
+    comparison and batch-eval endpoints. LLM policies are stateful (schedule proposed
+    once) and handled separately in _EpisodeContext."""
+    if policy == "ppo":
+        action, _ = ppo_model.predict(obs, deterministic=True)
+        return action
+    if policy == "naive_twap":
+        return naive_twap_action(env)
+    return twap_action(i, env._n_slices)
+
+
+def _episode_metrics(env: ExecutionEnv) -> dict:
+    """Compute the execution-quality metrics for a finished episode: the agent's own
+    VWAP, the benchmark VWAP, slippage vs benchmark in bps (sign-adjusted so positive =
+    better than benchmark for both buy and sell), and filled fraction."""
+    exec_prices = np.array(env._exec_prices, dtype=float)
+    exec_quantities = np.array(env._exec_quantities, dtype=float)
+    agent_vwap = execution_vwap(exec_prices, exec_quantities)
+    benchmark_vwap = compute_vwap(env._path[1:], env._volume_curve * env._total_shares)
+    filled_fraction = 1.0 - env._shares_remaining / env._total_shares
+
+    slippage_bps = 0.0
+    if benchmark_vwap > 0:
+        sign = 1.0 if env._side == "buy" else -1.0
+        slippage_bps = sign * (benchmark_vwap - agent_vwap) / benchmark_vwap * 10_000
+
+    return {
+        "agent_vwap": round(agent_vwap, 4),
+        "benchmark_vwap": round(benchmark_vwap, 4),
+        "slippage_bps": round(slippage_bps, 2),
+        "filled_fraction": round(filled_fraction, 4),
+    }
 
 
 def _propose_llm_schedule(info: dict) -> tuple[list[float], dict, str]:
@@ -193,18 +250,24 @@ class _EpisodeContext:
                 self._last_exec_price = self._current_price
             return np.array([multiplier], dtype=np.float32)
 
+        if self.policy == "naive_twap":
+            return naive_twap_action(self.env)
+
         return twap_action(i, self.n_slices)
 
     def meta(self) -> dict:
         """Static episode info known at reset (everything except the per-slice fills,
         the final reward, and filled fraction)."""
         notional_usd = round(self.info["open_price"] * self.env._total_shares, 2)
+        adv = self.info.get("adv", 0.0)
+        order_adv_pct = round(self.env._total_shares / adv * 100, 2) if adv else None
         return {
             "ticker": self.env._ticker,
             "side": self.env._side,
             "date": self.info["date"],
             "total_shares": self.env._total_shares,
             "notional_usd": notional_usd,
+            "order_adv_pct": order_adv_pct,
             "n_slices": self.env._n_slices,
             "open_price": self.info["open_price"],
             "close_price": self.info["close_price"],
@@ -230,6 +293,7 @@ def _build_context(
     date: str | None,
     regime: str | None,
     seed: int | None,
+    adv_pct: float | None = None,
 ) -> _EpisodeContext:
     """Validate inputs, resolve the scenario, set up the env + policy, and propose the
     LLM/fireworks schedule if needed. Raises HTTPException on any invalid input.
@@ -270,7 +334,15 @@ def _build_context(
             raise HTTPException(400, str(exc)) from exc
 
     shares = total_shares if total_shares is not None else _TOTAL_SHARES
-    if capital_usd is not None:
+    # Precedence: adv_pct (institutional sizing) > capital_usd > explicit total_shares.
+    if adv_pct is not None:
+        df = load_daily_data()[ticker]
+        ref_adv = float(df["Volume"].median())
+        try:
+            shares = shares_from_adv_pct(adv_pct, ref_adv)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    elif capital_usd is not None:
         df = load_daily_data()[ticker]
         if resolved_date:
             ref_price = float(df.loc[pd.Timestamp(resolved_date), "Open"])
@@ -314,9 +386,11 @@ def _build_context(
     elif policy == "fireworks":
         schedule_label = f"GPT-OSS (Fireworks) — {llm_meta.get('llm_primitive', 'unknown')}"
     elif policy == "ppo":
-        schedule_label = "PPO (trained)"
+        schedule_label = "PPO (trained RL agent)"
+    elif policy == "naive_twap":
+        schedule_label = "TWAP (equal-time baseline)"
     else:
-        schedule_label = "TWAP (equal participation)"
+        schedule_label = "VWAP-match (volume-curve participation)"
 
     return _EpisodeContext(
         env=env,
@@ -339,17 +413,18 @@ def get_config():
 
 @app.get("/api/episode")
 def get_episode(
-    policy: Literal["twap", "ppo", "llm", "fireworks"] = Query("twap"),
+    policy: Literal["naive_twap", "twap", "ppo", "llm", "fireworks"] = Query("twap"),
     ticker: str = Query("AAPL"),
     side: Literal["buy", "sell"] = Query("buy"),
     total_shares: int | None = Query(None),
     capital_usd: float | None = Query(None),
+    adv_pct: float | None = Query(None, description="Order size as a percentage of ADV"),
     n_slices: int = Query(_N_SLICES),
     date: str | None = Query(None, description="Historical replay date (YYYY-MM-DD)"),
     regime: str | None = Query(None, description="Market regime sample when date is omitted"),
     seed: int | None = Query(None, description="Seed for reproducible day sampling"),
 ):
-    ctx = _build_context(policy, ticker, side, total_shares, capital_usd, n_slices, date, regime, seed)
+    ctx = _build_context(policy, ticker, side, total_shares, capital_usd, n_slices, date, regime, seed, adv_pct)
 
     obs = ctx.env._build_obs()
     total_reward = 0.0
@@ -360,24 +435,25 @@ def get_episode(
         if terminated or truncated:
             break
 
-    filled_fraction = 1.0 - ctx.env._shares_remaining / ctx.env._total_shares
+    metrics = _episode_metrics(ctx.env)
 
     return {
         **ctx.meta(),
         "exec_prices": ctx.env._exec_prices,
         "exec_quantities": ctx.env._exec_quantities,
         "final_reward": round(total_reward, 4),
-        "filled_fraction": round(filled_fraction, 4),
+        **metrics,
     }
 
 
 @app.get("/api/episode/stream")
 async def get_episode_stream(
-    policy: Literal["twap", "ppo", "llm", "fireworks"] = Query("twap"),
+    policy: Literal["naive_twap", "twap", "ppo", "llm", "fireworks"] = Query("twap"),
     ticker: str = Query("AAPL"),
     side: Literal["buy", "sell"] = Query("buy"),
     total_shares: int | None = Query(None),
     capital_usd: float | None = Query(None),
+    adv_pct: float | None = Query(None, description="Order size as a percentage of ADV"),
     n_slices: int = Query(_N_SLICES),
     date: str | None = Query(None, description="Historical replay date (YYYY-MM-DD)"),
     regime: str | None = Query(None, description="Market regime sample when date is omitted"),
@@ -393,7 +469,7 @@ async def get_episode_stream(
     import json
 
     try:
-        ctx = _build_context(policy, ticker, side, total_shares, capital_usd, n_slices, date, regime, seed)
+        ctx = _build_context(policy, ticker, side, total_shares, capital_usd, n_slices, date, regime, seed, adv_pct)
     except HTTPException as exc:
         # Bind the detail to a local: Python deletes `exc` when the except block exits,
         # so the generator closure can't reference it directly.
@@ -433,15 +509,15 @@ async def get_episode_stream(
             if delay > 0:
                 await asyncio.sleep(delay)
 
-        filled_fraction = 1.0 - ctx.env._shares_remaining / ctx.env._total_shares
+        metrics = _episode_metrics(ctx.env)
         yield {
             "event": "done",
             "data": json.dumps(
                 {
                     "final_reward": round(total_reward, 4),
-                    "filled_fraction": round(filled_fraction, 4),
                     "exec_prices": ctx.env._exec_prices,
                     "exec_quantities": ctx.env._exec_quantities,
+                    **metrics,
                 }
             ),
         }
@@ -451,11 +527,233 @@ async def get_episode_stream(
 
 @app.get("/api/policies")
 def get_policies():
-    available = ["twap"]
+    # naive_twap and twap are always available (pure simulator policies, no model/key).
+    available = ["naive_twap", "twap"]
     if MODEL_PATH.exists():
         available.append("ppo")
     if os.environ.get("ANTHROPIC_API_KEY"):
         available.append("llm")
     if os.environ.get("FIREWORKS_API_KEY"):
         available.append("fireworks")
-    return {"available": available}
+    labels = {p: POLICY_LABELS.get(p, p.upper()) for p in available}
+    return {"available": available, "labels": labels}
+
+
+@app.get("/api/compare")
+def compare_episode(
+    policies: str = Query("ppo,naive_twap", description="Comma-separated policy ids to race"),
+    ticker: str = Query("AAPL"),
+    side: Literal["buy", "sell"] = Query("buy"),
+    total_shares: int | None = Query(None),
+    capital_usd: float | None = Query(None),
+    adv_pct: float | None = Query(None, description="Order size as a percentage of ADV"),
+    n_slices: int = Query(_N_SLICES),
+    date: str | None = Query(None, description="Historical replay date (YYYY-MM-DD)"),
+    regime: str | None = Query(None, description="Market regime sample when date is omitted"),
+    seed: int | None = Query(None, description="Seed for reproducible day sampling"),
+):
+    """Run several policies on the *identical* scenario and price path, so the only
+    variable is the policy. This is the apples-to-apples proof: same ticker, same day,
+    same seed -> same intraday path (the simulator's path RNG is seeded), so any
+    difference in execution quality is attributable to the policy alone.
+
+    Returns the shared scenario (path, volume_curve, meta) once, plus a per-policy
+    result (exec trace + metrics). The frontend can then animate all policies racing the
+    same path and read off the bps / dollar advantage of the RL agent over the baseline.
+    """
+    policy_ids = [p.strip() for p in policies.split(",") if p.strip()]
+    if not policy_ids:
+        raise HTTPException(400, "policies must contain at least one policy id")
+
+    # Pin a seed so every policy samples the exact same day and price path. Without
+    # this, a 'random' day request would draw a different day per policy.
+    if seed is None:
+        seed = int(np.random.default_rng().integers(1_000_000))
+
+    shared_meta: dict | None = None
+    results = []
+    for policy in policy_ids:
+        ctx = _build_context(policy, ticker, side, total_shares, capital_usd, n_slices, date, regime, seed, adv_pct)
+
+        obs = ctx.env._build_obs()
+        total_reward = 0.0
+        for i in range(ctx.n_slices):
+            action = ctx.action_for(i, obs)
+            obs, reward, terminated, truncated, _ = ctx.env.step(action)
+            total_reward += reward
+            if terminated or truncated:
+                break
+
+        meta = ctx.meta()
+        if shared_meta is None:
+            # Scenario-level fields are identical across policies; capture once.
+            shared_meta = {
+                k: meta[k]
+                for k in (
+                    "ticker", "side", "date", "total_shares", "notional_usd",
+                    "order_adv_pct", "n_slices", "open_price", "close_price", "adv",
+                    "data_source", "seed", "regime", "path", "volume_curve",
+                )
+            }
+
+        metrics = _episode_metrics(ctx.env)
+        results.append(
+            {
+                "policy": policy,
+                "label": POLICY_LABELS.get(policy, policy.upper()),
+                "schedule_label": ctx.schedule_label,
+                "exec_prices": ctx.env._exec_prices,
+                "exec_quantities": ctx.env._exec_quantities,
+                "final_reward": round(total_reward, 4),
+                "llm_reasoning": meta.get("llm_reasoning", ""),
+                "llm_primitive": meta.get("llm_primitive", ""),
+                **metrics,
+            }
+        )
+
+    return {**shared_meta, "policies": results}
+
+
+@app.get("/api/eval/stream")
+async def eval_stream(
+    policy: Literal["naive_twap", "twap", "ppo"] = Query("ppo"),
+    baseline: Literal["naive_twap", "twap"] = Query("naive_twap"),
+    ticker: str = Query("AAPL"),
+    side: Literal["buy", "sell"] = Query("buy"),
+    total_shares: int | None = Query(None),
+    adv_pct: float | None = Query(None, description="Order size as a percentage of ADV"),
+    n_slices: int = Query(_N_SLICES),
+    n_episodes: int = Query(50, ge=5, le=300),
+):
+    """Batch evaluation over chronologically held-out days the model never trained on
+    (the (0.8, 1.0) split), streaming per-episode results so the frontend can build a
+    distribution live, then a final summary with aggregate statistics.
+
+    Each held-out day is run with both `policy` and `baseline` on the *same* seed, so
+    they see the identical price path -- a paired comparison. This is the statistical
+    backbone of the 'we actually improve execution' claim: win-rate and mean advantage
+    over many unseen days, not a single cherry-picked episode.
+    """
+    import json
+
+    if policy == "ppo" and n_slices != _N_SLICES:
+        async def slice_err():
+            yield {"event": "error", "data": json.dumps({"detail": f"PPO requires n_slices={_N_SLICES}"})}
+        return EventSourceResponse(slice_err())
+
+    ppo_model = None
+    if "ppo" in (policy, baseline):
+        ppo_model = _get_ppo_model()
+        if ppo_model is None:
+            async def model_err():
+                yield {"event": "error", "data": json.dumps({"detail": "No PPO checkpoint found."})}
+            return EventSourceResponse(model_err())
+
+    if adv_pct is not None:
+        ref_adv = float(load_daily_data()[ticker]["Volume"].median())
+        shares = shares_from_adv_pct(adv_pct, ref_adv)
+    else:
+        shares = total_shares if total_shares is not None else _TOTAL_SHARES
+
+    def _run(env: ExecutionEnv, which: str, seed: int) -> dict:
+        env.reset(seed=seed, options={"ticker": ticker})
+        obs = env._build_obs()
+        for i in range(env._n_slices):
+            action = _stateless_action(which, env, i, obs, ppo_model)
+            obs, _, terminated, truncated, _ = env.step(action)
+            if terminated or truncated:
+                break
+        return _episode_metrics(env)
+
+    async def event_stream():
+        # Two independent envs on the holdout split, pinned to the requested ticker.
+        env_policy = ExecutionEnv(
+            n_slices=n_slices, total_shares=shares, side=side,
+            day_range=_HOLDOUT_DAY_RANGE, tickers=[ticker],
+        )
+        env_baseline = ExecutionEnv(
+            n_slices=n_slices, total_shares=shares, side=side,
+            day_range=_HOLDOUT_DAY_RANGE, tickers=[ticker],
+        )
+
+        yield {
+            "event": "meta",
+            "data": json.dumps(
+                {
+                    "policy": policy,
+                    "baseline": baseline,
+                    "policy_label": POLICY_LABELS.get(policy, policy.upper()),
+                    "baseline_label": POLICY_LABELS.get(baseline, baseline.upper()),
+                    "ticker": ticker,
+                    "side": side,
+                    "total_shares": shares,
+                    "adv_pct": adv_pct,
+                    "n_slices": n_slices,
+                    "n_episodes": n_episodes,
+                    "split": "held-out (last 20% of history, unseen in training)",
+                }
+            ),
+        }
+
+        wins = 0
+        notional_sum = 0.0
+        policy_bps_list: list[float] = []
+        baseline_bps_list: list[float] = []
+        base_seed = 10_000
+        for k in range(n_episodes):
+            seed = base_seed + k
+            p_metrics = _run(env_policy, policy, seed)
+            b_metrics = _run(env_baseline, baseline, seed)
+            p_bps = p_metrics["slippage_bps"]
+            b_bps = b_metrics["slippage_bps"]
+            advantage = round(p_bps - b_bps, 2)
+            policy_bps_list.append(p_bps)
+            baseline_bps_list.append(b_bps)
+            if advantage > 0:
+                wins += 1
+            notional_sum += float(env_policy._path[0]) * shares
+
+            yield {
+                "event": "episode",
+                "data": json.dumps(
+                    {
+                        "i": k,
+                        "policy_bps": p_bps,
+                        "baseline_bps": b_bps,
+                        "advantage_bps": advantage,
+                    }
+                ),
+            }
+            # Yield control so the client renders progressively.
+            await asyncio.sleep(0)
+
+        p_arr = np.array(policy_bps_list)
+        b_arr = np.array(baseline_bps_list)
+        adv = p_arr - b_arr
+        mean_notional = notional_sum / max(1, n_episodes)
+        # Dollar advantage per order = mean bps advantage * mean notional.
+        usd_per_order = float(adv.mean() / 10_000 * mean_notional)
+        # Paired t-like effect: mean / standard error.
+        se = float(adv.std(ddof=1) / np.sqrt(len(adv))) if len(adv) > 1 else 0.0
+        t_stat = float(adv.mean() / se) if se > 0 else 0.0
+
+        yield {
+            "event": "summary",
+            "data": json.dumps(
+                {
+                    "n_episodes": n_episodes,
+                    "policy_mean_bps": round(float(p_arr.mean()), 2),
+                    "policy_std_bps": round(float(p_arr.std()), 2),
+                    "baseline_mean_bps": round(float(b_arr.mean()), 2),
+                    "baseline_std_bps": round(float(b_arr.std()), 2),
+                    "mean_advantage_bps": round(float(adv.mean()), 2),
+                    "median_advantage_bps": round(float(np.median(adv)), 2),
+                    "win_rate": round(wins / max(1, n_episodes), 4),
+                    "mean_notional_usd": round(mean_notional, 2),
+                    "usd_saved_per_order": round(usd_per_order, 2),
+                    "t_stat": round(t_stat, 2),
+                }
+            ),
+        }
+
+    return EventSourceResponse(event_stream())

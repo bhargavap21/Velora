@@ -105,9 +105,13 @@ def test_impact_model_grows_with_participation():
 
 def test_impact_model_is_small_for_reasonable_order_size():
     model = ImpactModel(adv=100_000)
-    # ~1% ADV is a normal order size -- impact should be a few bps, not tens of bps.
-    temp = model.temporary_impact(1_000)
-    perm = model.permanent_impact(1_000)
+    # Impact is driven by the *per-slice* participation rate (qty / slice_volume), so a
+    # "reasonable order" is one that consumes a small fraction of the slice it trades into.
+    # A volume-aware schedule keeps participation low (~1% of the slice) -> a few bps.
+    slice_volume = 100_000 / 26  # a representative slice's volume
+    qty = 0.01 * slice_volume  # 1% participation
+    temp = model.temporary_impact(qty, slice_volume)
+    perm = model.permanent_impact(qty, slice_volume)
     assert temp < 0.0005  # < 5bps
     assert perm < 0.0005  # < 5bps
 
