@@ -21,9 +21,12 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import pathlib
 from dataclasses import dataclass, field
 from typing import Literal
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
@@ -54,6 +57,17 @@ from execution_env.simulator.benchmark import compute_vwap, execution_vwap
 from execution_env.simulator.market_sim import ensure_daily_data, ensure_daily_date, load_daily_data
 
 app = FastAPI(title="Velora execution API")
+
+_TMP_DIR = pathlib.Path("tmp")
+_TMP_DIR.mkdir(exist_ok=True)
+
+_TMP_CAP = 50
+
+
+def _maybe_evict_tmp() -> None:
+    files = sorted(_TMP_DIR.glob("episode_log_*.json"), key=lambda p: p.stat().st_mtime)
+    for old in files[:max(0, len(files) - _TMP_CAP + 1)]:
+        old.unlink(missing_ok=True)
 
 # Extra production origins (e.g. the Vercel deployment) come from ALLOWED_ORIGINS,
 # comma-separated, so the same image works in dev and prod without a code change.
@@ -457,24 +471,47 @@ def get_episode(
 ):
     ctx = _build_context(policy, ticker, side, total_shares, capital_usd, n_slices, date, regime, seed, adv_pct)
 
+    run_id = uuid4().hex[:8]
+    step_log: list[dict] = []
+
     obs = ctx.env._build_obs()
     total_reward = 0.0
     for i in range(ctx.n_slices):
+        obs_before = obs.tolist()
         action = ctx.action_for(i, obs)
         obs, reward, terminated, truncated, _ = ctx.env.step(action)
         total_reward += reward
+        step_log.append({
+            "obs": obs_before,
+            "action": float(np.asarray(action).flat[0]),
+            "reward": round(float(reward), 6),
+        })
         if terminated or truncated:
             break
+
+    _maybe_evict_tmp()
+    (_TMP_DIR / f"episode_log_{run_id}.json").write_text(
+        json.dumps({"run_id": run_id, "steps": step_log})
+    )
 
     metrics = _episode_metrics(ctx.env)
 
     return {
         **ctx.meta(),
+        "run_id": run_id,
         "exec_prices": ctx.env._exec_prices,
         "exec_quantities": ctx.env._exec_quantities,
         "final_reward": round(total_reward, 4),
         **metrics,
     }
+
+
+@app.get("/api/episode/log")
+def get_episode_log(run_id: str = Query(..., description="run_id returned by /api/episode")):
+    log_path = _TMP_DIR / f"episode_log_{run_id}.json"
+    if not log_path.exists():
+        raise HTTPException(404, f"No log found for run_id={run_id!r} — run /api/episode first")
+    return json.loads(log_path.read_text())
 
 
 @app.get("/api/episode/stream")

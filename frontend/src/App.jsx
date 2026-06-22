@@ -6,6 +6,7 @@ import ExecutionLive from './pages/ExecutionLive'
 import ExecutionSandbox from './pages/ExecutionSandbox'
 import Pitch from './pages/Pitch'
 import RftLive from './pages/RftLive'
+import ReplayPage from './pages/ReplayPage'
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
         <Route path="/sandbox" element={<ExecutionSandbox />} />
         <Route path="/pitch" element={<Pitch />} />
         <Route path="/rft" element={<RftLive />} />
+        <Route path="/replay" element={<ReplayPage />} />
       </Routes>
     </BrowserRouter>
   )
